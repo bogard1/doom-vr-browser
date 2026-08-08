@@ -58,6 +58,12 @@ export async function loadEngine(
       onStatus("Mounting engine resources…");
       const pk3 = await fetchBytes("/engine/lzdoom.pk3");
       module.FS.writeFile("/lzdoom.pk3", pk3);
+      // FIWadManager's constructor (d_iwad.cpp) reads its IWADINFO
+      // definitions (which lump names mean "this is Doom2.wad" etc.)
+      // exclusively from OPTIONALWAD, not BASEWAD -- see version.h.
+      // Without this mounted, no IWAD is ever recognized.
+      const gameSupportPk3 = await fetchBytes("/engine/lz_game_support.pk3");
+      module.FS.writeFile("/lz_game_support.pk3", gameSupportPk3);
 
       return module;
     })();

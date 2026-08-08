@@ -13,7 +13,7 @@ if [ ! -f "${WASM_OUT}/lzdoom.js" ]; then
 fi
 
 mkdir -p "${WEB_ENGINE_DIR}"
-cp "${WASM_OUT}/lzdoom.js" "${WASM_OUT}/lzdoom.wasm" "${WASM_OUT}/lzdoom.pk3" "${WEB_ENGINE_DIR}/"
+cp "${WASM_OUT}/lzdoom.js" "${WASM_OUT}/lzdoom.wasm" "${WASM_OUT}/lzdoom.pk3" "${WASM_OUT}/lz_game_support.pk3" "${WEB_ENGINE_DIR}/"
 
 cd "${ROOT_DIR}/web"
 if [ ! -d node_modules ]; then

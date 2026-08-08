@@ -242,7 +242,12 @@ regardless of filename.
   filename.
 - Clear error shown for invalid/non-WAD files rather than a silent hang.
 
-**Status: done.** `web/` (Vite + TS, per Phase 2's preferred stack) has
+**Status: plumbing done; real-gameplay verification is now an M3 blocker, not
+an M2 one.** The WAD-loader pipeline itself (file → FS → callMain) is fully
+working end-to-end with a real, user-supplied `DOOM2.WAD` — see M3's status
+note below for what was found testing it for real, and the current blocker.
+
+`web/` (Vite + TS, per Phase 2's preferred stack) has
 `src/wad-loader.ts` (drag/drop + file-input, validates the IWAD/PWAD magic
 client-side before accepting), `src/engine.ts` (loads the ES-module build of
 `lzdoom.js`, mounts `lzdoom.pk3` and the user's WAD into MEMFS, calls
@@ -298,6 +303,89 @@ engine input backend (`src/posix/` or new `src/web/` platform backend).
   VR code involved.
 - Playable end-to-end on a desktop browser (Chrome/Firefox) at a stable
   frame rate for a full level.
+
+**Status: in progress, real engine startup got much further than expected,
+current blocker identified.** Tested with the user's own `DOOM2.WAD` (2026
+08-07/08 session, same day as M1/M2). This surfaced several real engine bugs
+beyond the M1 compile/link fixes — all in `engine/`, folded into
+`patches/engine/0001-emscripten-wasm-port.patch`:
+
+1. **Silent fatal errors** — `I_ShowFatalError` (`src/posix/sdl/i_system.cpp`)
+   had `#ifdef __APPLE__ / #elif __linux__ / #else // ???` — the `#else` did
+   *nothing*. Since `D_DoomMain()`'s top-level `catch (const std::exception&)`
+   calls exactly this function before setting `ret = -1`, every fatal error
+   during startup was completely silent (process just exits) unless run
+   under a native-message-box platform. This cost the most debugging time
+   this session, by far — added an `__EMSCRIPTEN__` branch that
+   `fprintf(stderr, ...)`s the message, which is what finally surfaced every
+   other bug below.
+2. **A second, deeper linker-section registration bug**: beyond `CReg`
+   (M1's `PClass::StaticInit` fix), **`AReg`** (native action functions,
+   `DEFINE_ACTION_FUNCTION*`), **`GReg`** (DECORATE properties), **`YReg`**
+   (MAPINFO options), and **`FReg`** (native ZScript field/global exports,
+   `DEFINE_FIELD*`/`DEFINE_GLOBAL*` — ~50+ call sites) all use the exact same
+   broken linker-section-probing trick as CReg (confirmed empirically: same
+   symptom, `Head`/`Tail` sentinels adjacent in memory with nothing found
+   between them). Fixed all five with one shared mechanism: `autosegs.h` now
+   has an `__EMSCRIPTEN__` branch defining `RegListNode`/`RegListHead`/
+   `RegListPusher` (an intrusive linked list populated by ordinary global
+   constructors, which wasm-ld *does* run reliably, unlike section layout)
+   and a matching `FAutoSegIterator` that walks it with the same
+   `while (*++probe != nullptr)` call-site interface as before -- zero
+   changes needed at any of the 8 *consumer* call sites
+   (`dobjtype.cpp`/`d_main.cpp`/`g_mapinfo.cpp`/`thingdef_data.cpp`). The 13
+   *producer* macro sites (`_DECLARE_TI` in `dobject.h`; 3
+   `DEFINE_ACTION_FUNCTION*` in `vm.h`; 9 `DEFINE_FIELD*`/`DEFINE_GLOBAL*` in
+   `vm.h`; 3 property macros in `thingdef.h`; 1 in `g_level.h`) each got a
+   small `AREG_REGISTER`/`FREG_REGISTER`/`GREG_REGISTER` helper-macro
+   invocation added, guarded the same way. Without this, ZScript compilation
+   failed with ~950 "Variable X not found in Actor" errors (every native
+   field access) — this is not an Emscripten-only bug; it would affect any
+   non-MSVC/non-GCC-with-working-section-merge toolchain.
+3. **`OPTIONALWAD` filename mismatch** (`src/version.h`): defined as
+   `"game_support.pk3"` for non-Android, but `wadsrc_extra/CMakeLists.txt`'s
+   `add_pk3(lz_game_support.pk3 ...)` unconditionally produces
+   `lz_game_support.pk3` on every platform. `FIWadManager`'s constructor
+   (`d_iwad.cpp`) loads *all* of its `IWADINFO` definitions (the "these lumps
+   mean this is Doom2.wad" rules) from `OPTIONALWAD` specifically, not
+   `BASEWAD` — so with the wrong name, `FResourceFile::OpenResourceFile`
+   silently returned null, `mIWadInfos` stayed empty, and *no* IWAD could
+   ever be recognized regardless of its content, with the fatal error
+   swallowed per bug #1. Fixed the define to match reality; `engine.ts` now
+   also fetches and mounts `lz_game_support.pk3` alongside `lzdoom.pk3`.
+4. **Emscripten resource limits**: added `-sALLOW_MEMORY_GROWTH=1
+   -sINITIAL_MEMORY=134217728` (ZScript compilation OOM'd against the
+   64MB-ish default) and `-sSTACK_SIZE=16777216` (16MB; hit a wasm stack
+   overflow at the default 64KB during actor/class initialization) to
+   `scripts/build-wasm.sh`'s linker flags.
+
+With all of the above, `DOOM2.WAD` now loads for real: `W_Init` adds
+`lzdoom.pk3`/`lz_game_support.pk3`/the WAD (2919 lumps), ZScript/DECORATE
+compile cleanly, sound/status-bar/map-info init run, and the browser tab
+title changes to `LZDOOM qzd...` (set via `SDL_SetWindowTitle`, i.e.
+`SDL_InitSubSystem(SDL_INIT_VIDEO)` succeeded) — confirmed both under Node
+(headless, fails later at `_emscripten_get_screen_size` since Node has no
+`window.screen`, expected) and in a real Chrome tab via claude-in-chrome.
+
+**Current blocker**: immediately after the video subsystem comes up, the
+console shows `emscripten_set_main_loop_timing: Cannot set timing mode for
+main loop since a main loop does not exist!` followed by a fatal
+`RangeError: Maximum call stack size exceeded` — a *JavaScript*-side stack
+overflow (distinct from bug #4's wasm stack overflow, already fixed). Not
+yet root-caused. Likely candidates for the next session: the engine's own
+main-loop driver (`i_time.cpp`/`d_main.cpp`'s `D_DoomLoop`) probably assumes
+a native blocking loop and needs adapting to
+`emscripten_set_main_loop`/`emscripten_set_main_loop_timing` explicitly
+before anything tries to set timing on it; the JS stack overflow may be a
+symptom of a tight recursive JS↔wasm call bounce (e.g. an `invoke_*`
+trampoline recursing) rather than genuine unbounded recursion in game logic.
+Also noted but not yet investigated: ~50 non-fatal
+`"Unknown property 'sky1'/'cluster'/'music'/etc. found in map definition"`
+warnings while parsing `mapinfo/doom2.txt` — the engine continues past
+these, but the specific properties named suggest a real (separate, lower
+priority) MAPINFO-parser registration gap, possibly the same
+linker-section-trick family as bugs above; worth checking whether MAPINFO
+option parsing uses `YReg` correctly once M3's main blocker is resolved.
 
 ---
 

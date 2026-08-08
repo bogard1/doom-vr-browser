@@ -210,6 +210,130 @@ index 7a25c4d807..d77e1db2b0 100644
  	${FASTMATH_SOURCES}
  	${PCH_SOURCES}
  	x86.cpp
+diff --git c/src/__autostart.cpp i/src/__autostart.cpp
+index 13e104d753..a8226c68c6 100644
+--- c/src/__autostart.cpp
++++ i/src/__autostart.cpp
+@@ -89,6 +89,21 @@ __declspec(allocate(".yreg$a")) void *const YRegHead = 0;
+ 
+ #endif
+ 
++#elif defined(__EMSCRIPTEN__)
++
++#include "autosegs.h"
++
++// See autosegs.h for why Emscripten doesn't use the section-probing trick
++// below -- these are the list heads FAutoSegIterator's Emscripten branch
++// walks; RegListPusher instances (added at each registration site) push
++// themselves on as this and other translation units' static initializers
++// run.
++RegListHead ARegHead;
++RegListHead CRegHead;
++RegListHead FRegHead;
++RegListHead GRegHead;
++RegListHead YRegHead;
++
+ #elif defined(__GNUC__)
+ 
+ #include "doomtype.h"
+diff --git c/src/autosegs.h i/src/autosegs.h
+index 9cba04ad23..0c238879b7 100644
+--- c/src/autosegs.h
++++ i/src/autosegs.h
+@@ -49,6 +49,87 @@
+ typedef void * const REGINFO;
+ typedef void * NCREGINFO;
+ 
++#ifdef __EMSCRIPTEN__
++// wasm-ld does not lay out same-named `__attribute__((section(...)))`
++// globals contiguously across translation units the way ELF/COFF linkers
++// do -- verified empirically: CRegHead/CRegTail ended up 4 bytes apart at
++// runtime with zero class registrations found between them, so
++// PClass::StaticInit() found no built-in classes at all. Use an intrusive
++// linked list populated by ordinary global constructors instead; those are
++// guaranteed to run before main(), which is all StaticInit()-style
++// consumers need. See docs/questzdoom-architecture.md.
++struct RegListNode
++{
++	const void *data;
++	RegListNode *next;
++};
++struct RegListHead
++{
++	RegListNode *first = nullptr;
++};
++// A file-scope `static RegListPusher some_unique_name(SomeRegHead, data);`
++// pushes `data` onto `SomeRegHead`'s list when that translation unit's
++// static initializers run. `data` is `const void*` since several
++// registration entries (e.g. AFuncDesc) are `static const`.
++struct RegListPusher
++{
++	RegListNode node;
++	RegListPusher(RegListHead &head, const void *data)
++	{
++		node.data = data;
++		node.next = head.first;
++		head.first = &node;
++	}
++};
++
++// List of Action functons
++extern RegListHead ARegHead, ARegTail;
++
++// List of TypeInfos
++extern RegListHead CRegHead, CRegTail;
++
++// List of class fields
++extern RegListHead FRegHead, FRegTail;
++
++// List of properties
++extern RegListHead GRegHead, GRegTail;
++
++// List of MAPINFO map options
++extern RegListHead YRegHead, YRegTail;
++
++class FAutoSegIterator
++{
++	public:
++		// `tail` is unused (kept only so call sites match the non-Emscripten
++		// constructor signature below unchanged).
++		FAutoSegIterator(RegListHead &head, RegListHead & /*tail*/)
++			: HeadNode(head.first), Probe(nullptr), Started(false)
++		{
++		}
++		NCREGINFO operator*() const
++		{
++			return const_cast<NCREGINFO>(Started && Probe ? Probe->data : nullptr);
++		}
++		FAutoSegIterator &operator++()
++		{
++			Probe = Started ? (Probe ? Probe->next : nullptr) : HeadNode;
++			Started = true;
++			return *this;
++		}
++		void Reset()
++		{
++			Probe = nullptr;
++			Started = false;
++		}
++
++	protected:
++		RegListNode *HeadNode;
++		RegListNode *Probe;
++		bool Started;
++};
++
++#else
++
+ // List of Action functons
+ extern REGINFO ARegHead;
+ extern REGINFO ARegTail;
+@@ -111,3 +192,5 @@ class FAutoSegIterator
+ };
+ 
+ #endif
++
++#endif
 diff --git c/src/cmdlib.cpp i/src/cmdlib.cpp
 index 3d66dfad84..4ce3bb5514 100644
 --- c/src/cmdlib.cpp
@@ -224,9 +348,18 @@ index 3d66dfad84..4ce3bb5514 100644
  #endif
  #endif
 diff --git c/src/d_main.cpp i/src/d_main.cpp
-index df3bcda9df..7b0494b62c 100644
+index df3bcda9df..781427bf8b 100644
 --- c/src/d_main.cpp
 +++ i/src/d_main.cpp
+@@ -2595,7 +2595,7 @@ static int D_DoomMain_Internal (void)
+ 		}
+ 		nospriterename = false;
+ 
+-		// Load zdoom.pk3 alone so that we can get access to the internal gameinfos before 
++		// Load zdoom.pk3 alone so that we can get access to the internal gameinfos before
+ 		// the IWAD is known.
+ 
+ 		GetCmdLineFiles(pwads);
 @@ -3025,6 +3025,14 @@ int D_DoomMain()
  	return ret;
  }
@@ -250,6 +383,41 @@ index df3bcda9df..7b0494b62c 100644
  
  //==========================================================================
  //
+diff --git c/src/dobject.h i/src/dobject.h
+index b57f75bedf..9a0bff7b03 100644
+--- c/src/dobject.h
++++ i/src/dobject.h
+@@ -39,6 +39,7 @@
+ #include "doomtype.h"
+ #include "i_system.h"
+ #include "vectors.h"
++#include "autosegs.h"
+ 
+ class PClass;
+ class PType;
+@@ -134,6 +135,10 @@ public: \
+ #if defined(_MSC_VER)
+ #	pragma section(".creg$u",read)
+ #	define _DECLARE_TI(cls) __declspec(allocate(".creg$u")) ClassReg * const cls::RegistrationInfoPtr = &cls::RegistrationInfo;
++#elif defined(__EMSCRIPTEN__)
++#	define _DECLARE_TI(cls) \
++		ClassReg * const cls::RegistrationInfoPtr = &cls::RegistrationInfo; \
++		static RegListPusher cls##_CRegPusher(CRegHead, &cls::RegistrationInfo);
+ #else
+ #	define _DECLARE_TI(cls) ClassReg * const cls::RegistrationInfoPtr __attribute__((section(SECTION_CREG))) = &cls::RegistrationInfo;
+ #endif
+diff --git c/src/g_level.h i/src/g_level.h
+index 48ba798f9e..8c30d73e4d 100644
+--- c/src/g_level.h
++++ i/src/g_level.h
+@@ -37,6 +37,7 @@
+ #include "doomtype.h"
+ #include "sc_man.h"
+ #include "resourcefiles/file_zip.h"
++#include "autosegs.h"
+ 
+ struct level_info_t;
+ struct cluster_info_t;
 diff --git c/src/gl/stereo3d/gl_stereo_cvars.cpp i/src/gl/stereo3d/gl_stereo_cvars.cpp
 index 1b0277a845..b7553b1dfd 100644
 --- c/src/gl/stereo3d/gl_stereo_cvars.cpp
@@ -454,6 +622,37 @@ index 753434fec1..c93b0fada3 100644
  Semaphore FPSLimitSemaphore;
  
  static void FPSLimitNotify(sigval val)
+diff --git c/src/posix/sdl/i_main.cpp i/src/posix/sdl/i_main.cpp
+index 00fa15497b..a31c034a6f 100644
+--- c/src/posix/sdl/i_main.cpp
++++ i/src/posix/sdl/i_main.cpp
+@@ -170,6 +170,10 @@ int main_android (int argc, char **argv)
+ int main (int argc, char **argv)
+ {
+ #endif
++#ifdef __EMSCRIPTEN__
++	setvbuf(stderr, NULL, _IONBF, 0);
++	setvbuf(stdout, NULL, _IONBF, 0);
++#endif
+ #if !defined (__APPLE__) && !defined (__ANDROID__)
+ 	{
+ 		int s[4] = { SIGSEGV, SIGILL, SIGFPE, SIGBUS };
+diff --git c/src/posix/sdl/i_system.cpp i/src/posix/sdl/i_system.cpp
+index 27a32076d4..352fcc129e 100644
+--- c/src/posix/sdl/i_system.cpp
++++ i/src/posix/sdl/i_system.cpp
+@@ -110,6 +110,11 @@ void I_ShowFatalError(const char *message)
+ 	Mac_I_FatalError(message);
+ #elif defined __linux__
+ 	Linux_I_FatalError(message);
++#elif defined __EMSCRIPTEN__
++	// No native message-box concept; this is the only thing the user (or a
++	// browser console) will ever see for an otherwise-silent fatal error --
++	// see D_DoomMain()'s `catch (const std::exception&)` in d_main.cpp.
++	fprintf(stderr, "FATAL ERROR: %s\n", message);
+ #else
+ 	// ???
+ #endif
 diff --git c/src/posix/sdl/sdlglvideo.cpp i/src/posix/sdl/sdlglvideo.cpp
 index 50f9f10edf..581dfed456 100644
 --- c/src/posix/sdl/sdlglvideo.cpp
@@ -645,6 +844,219 @@ index 0000000000..2129f5a622
 +#include "hardware.h"
 +#include "v_video.h"
 +#include "sdlglvideo.h"
+diff --git c/src/scripting/thingdef.h i/src/scripting/thingdef.h
+index 63b65b2bb1..dcf29cbdf8 100644
+--- c/src/scripting/thingdef.h
++++ i/src/scripting/thingdef.h
+@@ -43,6 +43,7 @@
+ #define __THINGDEF_H
+ 
+ #include "doomtype.h"
++#include "autosegs.h"
+ #include "info.h"
+ #include "s_sound.h"
+ #include "sc_man.h"
+@@ -248,9 +249,18 @@ enum EDefinitionType
+ 
+ #define MSVC_PSEG __declspec(allocate(".greg$u"))
+ #define GCC_PSEG
++#define GREG_REGISTER(name, paramlist, clas)
++#elif defined(__EMSCRIPTEN__)
++#define MSVC_PSEG
++#define GCC_PSEG
++// See autosegs.h: pushes onto GRegHead's list instead of relying on
++// section layout, which wasm-ld doesn't preserve across translation units.
++#define GREG_REGISTER(name, paramlist, clas) \
++	static RegListPusher name##_##paramlist##_##clas##_GRegPusher(GRegHead, &Prop_##name##_##paramlist##_##clas);
+ #else
+ #define MSVC_PSEG
+ #define GCC_PSEG __attribute__((section(SECTION_GREG))) __attribute__((used))
++#define GREG_REGISTER(name, paramlist, clas)
+ #endif
+ 
+ 
+@@ -288,6 +298,7 @@ int MatchString (const char *in, const char **strings);
+ 	static FPropertyInfo Prop_##name##_##paramlist##_##clas = \
+ 		{ #name, #paramlist, #clas, (PropHandler)Handler_##name##_##paramlist##_##clas, cat }; \
+ 	MSVC_PSEG FPropertyInfo *infoptr_##name##_##paramlist##_##clas GCC_PSEG = &Prop_##name##_##paramlist##_##clas; \
++	GREG_REGISTER(name, paramlist, clas) \
+ 	static void Handler_##name##_##paramlist##_##clas(A##clas *defaults, PClassActor *info, Baggage &bag, FPropParam *params)
+ 
+ #define DEFINE_PREFIXED_PROPERTY_BASE(prefix, name, paramlist, clas, cat) \
+@@ -295,6 +306,7 @@ int MatchString (const char *in, const char **strings);
+ 	static FPropertyInfo Prop_##name##_##paramlist##_##clas = \
+ { #prefix"."#name, #paramlist, #clas, (PropHandler)Handler_##name##_##paramlist##_##clas, cat }; \
+ 	MSVC_PSEG FPropertyInfo *infoptr_##name##_##paramlist##_##clas GCC_PSEG = &Prop_##name##_##paramlist##_##clas; \
++	GREG_REGISTER(name, paramlist, clas) \
+ 	static void Handler_##name##_##paramlist##_##clas(A##clas *defaults, PClassActor *info, Baggage &bag, FPropParam *params)
+ 
+ #define DEFINE_PREFIXED_SCRIPTED_PROPERTY_BASE(prefix, name, paramlist, clas, cat) \
+@@ -302,6 +314,7 @@ int MatchString (const char *in, const char **strings);
+ 	static FPropertyInfo Prop_##name##_##paramlist##_##clas = \
+ { #prefix"."#name, #paramlist, #clas, (PropHandler)Handler_##name##_##paramlist##_##clas, cat }; \
+ 	MSVC_PSEG FPropertyInfo *infoptr_##name##_##paramlist##_##clas GCC_PSEG = &Prop_##name##_##paramlist##_##clas; \
++	GREG_REGISTER(name, paramlist, clas) \
+ 	static void Handler_##name##_##paramlist##_##clas(AActor *defaults, PClassActor *info, Baggage &bag, FPropParam *params)
+ 
+ 
+diff --git c/src/scripting/vm/vm.h i/src/scripting/vm/vm.h
+index db55dce43c..4ac2252d1e 100644
+--- c/src/scripting/vm/vm.h
++++ i/src/scripting/vm/vm.h
+@@ -624,11 +624,24 @@ struct AFuncDesc
+ #define MSVC_FSEG __declspec(allocate(".freg$u"))
+ #define GCC_ASEG
+ #define GCC_FSEG
++#define AREG_REGISTER(cls, name)
++#define FREG_REGISTER(uniquename, data)
++#elif defined(__EMSCRIPTEN__)
++#define MSVC_ASEG
++#define MSVC_FSEG
++#define GCC_ASEG
++#define GCC_FSEG
++// See autosegs.h: pushes onto ARegHead's/FRegHead's list instead of relying
++// on section layout, which wasm-ld doesn't preserve across translation units.
++#define AREG_REGISTER(cls, name) static RegListPusher cls##_##name##_ARegPusher(ARegHead, &cls##_##name##_Hook);
++#define FREG_REGISTER(uniquename, data) static RegListPusher uniquename##_FRegPusher(FRegHead, &data);
+ #else
+ #define MSVC_ASEG
+ #define MSVC_FSEG
+ #define GCC_ASEG __attribute__((section(SECTION_AREG))) __attribute__((used))
+ #define GCC_FSEG __attribute__((section(SECTION_FREG))) __attribute__((used))
++#define AREG_REGISTER(cls, name)
++#define FREG_REGISTER(uniquename, data)
+ #endif
+ 
+ // Macros to handle action functions. These are here so that I don't have to
+@@ -640,6 +653,7 @@ struct AFuncDesc
+ 	static const AFuncDesc cls##_##name##_Hook = { #cls, #name, AF_##cls##_##name, &cls##_##name##_VMPtr, native }; \
+ 	extern AFuncDesc const *const cls##_##name##_HookPtr; \
+ 	MSVC_ASEG AFuncDesc const *const cls##_##name##_HookPtr GCC_ASEG = &cls##_##name##_Hook; \
++	AREG_REGISTER(cls, name) \
+ 	static int AF_##cls##_##name(VM_ARGS)
+ 
+ #define DEFINE_ACTION_FUNCTION_NATIVE0(cls, name, native) \
+@@ -648,6 +662,7 @@ struct AFuncDesc
+ 	static const AFuncDesc cls##_##name##_Hook = { #cls, #name, AF_##cls##_##name, &cls##_##name##_VMPtr }; \
+ 	extern AFuncDesc const *const cls##_##name##_HookPtr; \
+ 	MSVC_ASEG AFuncDesc const *const cls##_##name##_HookPtr GCC_ASEG = &cls##_##name##_Hook; \
++	AREG_REGISTER(cls, name) \
+ 	static int AF_##cls##_##name(VM_ARGS)
+ 
+ #define DEFINE_ACTION_FUNCTION(cls, name) \
+@@ -656,54 +671,64 @@ struct AFuncDesc
+ 	static const AFuncDesc cls##_##name##_Hook = { #cls, #name, AF_##cls##_##name, &cls##_##name##_VMPtr }; \
+ 	extern AFuncDesc const *const cls##_##name##_HookPtr; \
+ 	MSVC_ASEG AFuncDesc const *const cls##_##name##_HookPtr GCC_ASEG = &cls##_##name##_Hook; \
++	AREG_REGISTER(cls, name) \
+ 	static int AF_##cls##_##name(VM_ARGS)
+ 
+ // cls is the scripted class name, icls the internal one (e.g. player_t vs. Player)
+ #define DEFINE_FIELD_X(cls, icls, name) \
+ 	static const FieldDesc VMField_##icls##_##name = { "A" #cls, #name, (unsigned)myoffsetof(icls, name), (unsigned)sizeof(icls::name), 0 }; \
+ 	extern FieldDesc const *const VMField_##icls##_##name##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMField_##icls##_##name##_HookPtr GCC_FSEG = &VMField_##icls##_##name;
++	MSVC_FSEG FieldDesc const *const VMField_##icls##_##name##_HookPtr GCC_FSEG = &VMField_##icls##_##name; \
++	FREG_REGISTER(VMField_##icls##_##name, VMField_##icls##_##name)
+ 
+ // This is for cases where the internal size does not match the part that gets exported.
+ #define DEFINE_FIELD_UNSIZED(cls, icls, name) \
+ 	static const FieldDesc VMField_##icls##_##name = { "A" #cls, #name, (unsigned)myoffsetof(icls, name), ~0u, 0 }; \
+ 	extern FieldDesc const *const VMField_##icls##_##name##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMField_##icls##_##name##_HookPtr GCC_FSEG = &VMField_##icls##_##name;
++	MSVC_FSEG FieldDesc const *const VMField_##icls##_##name##_HookPtr GCC_FSEG = &VMField_##icls##_##name; \
++	FREG_REGISTER(VMField_##icls##_##name##_unsized, VMField_##icls##_##name)
+ 
+ #define DEFINE_FIELD_NAMED_X(cls, icls, name, scriptname) \
+ 	static const FieldDesc VMField_##cls##_##scriptname = { "A" #cls, #scriptname, (unsigned)myoffsetof(icls, name), (unsigned)sizeof(icls::name), 0 }; \
+ 	extern FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr GCC_FSEG = &VMField_##cls##_##scriptname;
++	MSVC_FSEG FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr GCC_FSEG = &VMField_##cls##_##scriptname; \
++	FREG_REGISTER(VMField_##cls##_##scriptname##_namedx, VMField_##cls##_##scriptname)
+ 
+ #define DEFINE_FIELD_X_BIT(cls, icls, name, bitval) \
+ 	static const FieldDesc VMField_##icls##_##name = { "A" #cls, #name, (unsigned)myoffsetof(icls, name), (unsigned)sizeof(icls::name), bitval }; \
+ 	extern FieldDesc const *const VMField_##icls##_##name##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMField_##icls##_##name##_HookPtr GCC_FSEG = &VMField_##cls##_##name;
++	MSVC_FSEG FieldDesc const *const VMField_##icls##_##name##_HookPtr GCC_FSEG = &VMField_##cls##_##name; \
++	FREG_REGISTER(VMField_##icls##_##name##_xbit, VMField_##icls##_##name)
+ 
+ #define DEFINE_FIELD(cls, name) \
+ 	static const FieldDesc VMField_##cls##_##name = { #cls, #name, (unsigned)myoffsetof(cls, name), (unsigned)sizeof(cls::name), 0 }; \
+ 	extern FieldDesc const *const VMField_##cls##_##name##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMField_##cls##_##name##_HookPtr GCC_FSEG = &VMField_##cls##_##name;
++	MSVC_FSEG FieldDesc const *const VMField_##cls##_##name##_HookPtr GCC_FSEG = &VMField_##cls##_##name; \
++	FREG_REGISTER(VMField_##cls##_##name, VMField_##cls##_##name)
+ 
+ #define DEFINE_FIELD_NAMED(cls, name, scriptname) \
+ 		static const FieldDesc VMField_##cls##_##scriptname = { #cls, #scriptname, (unsigned)myoffsetof(cls, name), (unsigned)sizeof(cls::name), 0 }; \
+ 	extern FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr GCC_FSEG = &VMField_##cls##_##scriptname;
++	MSVC_FSEG FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr GCC_FSEG = &VMField_##cls##_##scriptname; \
++	FREG_REGISTER(VMField_##cls##_##scriptname, VMField_##cls##_##scriptname)
+ 
+ #define DEFINE_FIELD_BIT(cls, name, scriptname, bitval) \
+ 		static const FieldDesc VMField_##cls##_##scriptname = { #cls, #scriptname, (unsigned)myoffsetof(cls, name), (unsigned)sizeof(cls::name), bitval }; \
+ 	extern FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr GCC_FSEG = &VMField_##cls##_##scriptname;
++	MSVC_FSEG FieldDesc const *const VMField_##cls##_##scriptname##_HookPtr GCC_FSEG = &VMField_##cls##_##scriptname; \
++	FREG_REGISTER(VMField_##cls##_##scriptname##_bit, VMField_##cls##_##scriptname)
+ 
+ #define DEFINE_GLOBAL(name) \
+ 	static const FieldDesc VMGlobal_##name = { "", #name, (size_t)&name, (unsigned)sizeof(name), 0 }; \
+ 	extern FieldDesc const *const VMGlobal_##name##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMGlobal_##name##_HookPtr GCC_FSEG = &VMGlobal_##name;
++	MSVC_FSEG FieldDesc const *const VMGlobal_##name##_HookPtr GCC_FSEG = &VMGlobal_##name; \
++	FREG_REGISTER(VMGlobal_##name, VMGlobal_##name)
+ 
+ #define DEFINE_GLOBAL_NAMED(iname, name) \
+ 	static const FieldDesc VMGlobal_##name = { "", #name, (size_t)&iname, (unsigned)sizeof(iname), 0 }; \
+ 	extern FieldDesc const *const VMGlobal_##name##_HookPtr; \
+-	MSVC_FSEG FieldDesc const *const VMGlobal_##name##_HookPtr GCC_FSEG = &VMGlobal_##name;
++	MSVC_FSEG FieldDesc const *const VMGlobal_##name##_HookPtr GCC_FSEG = &VMGlobal_##name; \
++	FREG_REGISTER(VMGlobal_##name##_named, VMGlobal_##name)
+ 
+ 
+ class AActor;
+diff --git c/src/version.h i/src/version.h
+index 220ce7c3d7..6f92463e16 100644
+--- c/src/version.h
++++ i/src/version.h
+@@ -92,7 +92,12 @@ const char *GetVersionString();
+ #define OPTIONALWAD "res/lz_game_support.pk3"
+ #else
+ #define BASEWAD "lzdoom.pk3"
+-#define OPTIONALWAD "game_support.pk3"
++// wadsrc_extra/CMakeLists.txt always names this "lz_game_support.pk3"
++// (add_pk3(lz_game_support.pk3 ...), not platform-conditional) -- "game_support.pk3"
++// without the "lz_" prefix is never actually produced by the build on any
++// platform, so FIWadManager's constructor (d_iwad.cpp) silently found no
++// IWADINFO definitions at all outside Android. See docs/questzdoom-architecture.md.
++#define OPTIONALWAD "lz_game_support.pk3"
+ #endif
+ 
+ 
+diff --git c/src/zzautozend.cpp i/src/zzautozend.cpp
+index 18c020310c..502e3f1ee6 100644
+--- c/src/zzautozend.cpp
++++ i/src/zzautozend.cpp
+@@ -53,6 +53,16 @@ __declspec(allocate(".greg$z")) void *const GRegTail = 0;
+ __declspec(allocate(".yreg$z")) void *const YRegTail = 0;
+ 
+ 
++#elif defined(__EMSCRIPTEN__)
++
++// Unused (see autosegs.h) -- FAutoSegIterator's Emscripten branch ignores
++// its "tail" constructor argument, but the call sites still pass one.
++RegListHead ARegTail;
++RegListHead CRegTail;
++RegListHead FRegTail;
++RegListHead GRegTail;
++RegListHead YRegTail;
++
+ #elif defined(__GNUC__)
+ 
+ #include "doomtype.h"
 diff --git c/tools/lemon/CMakeLists.txt i/tools/lemon/CMakeLists.txt
 index 71418eda5a..e4ffa8b0c6 100644
 --- c/tools/lemon/CMakeLists.txt

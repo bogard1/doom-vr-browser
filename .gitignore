@@ -9,3 +9,9 @@ web/public/engine/
 *.wasm
 *.log
 .DS_Store
+
+# User-supplied game data -- never commit or redistribute (see README/legal).
+*.wad
+*.WAD
+*.pk3
+*.pk7
