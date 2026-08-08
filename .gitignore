@@ -1,0 +1,10 @@
+# Reference clone of QuestZDoom used for research; not part of this project's source tree.
+research/
+
+node_modules/
+dist/
+build/
+.tools/
+*.wasm
+*.log
+.DS_Store

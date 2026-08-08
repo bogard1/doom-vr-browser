@@ -1,0 +1,666 @@
+diff --git c/platform/emscripten-stub/QzDoom/VrCommon.h i/platform/emscripten-stub/QzDoom/VrCommon.h
+new file mode 100644
+index 0000000000..ff1b9170d2
+--- /dev/null
++++ i/platform/emscripten-stub/QzDoom/VrCommon.h
+@@ -0,0 +1,75 @@
++// Stand-in for QuestZDoom's Projects/Android/jni/QzDoom/VrCommon.h.
++//
++// That header (and its own dependency on the Oculus mobile SDK's mathlib.h
++// and <android/log.h>) is Android/Oculus-specific glue that this Emscripten
++// build does not compile -- see docs/questzdoom-architecture.md. A handful
++// of core gameplay files (p_user.cpp, p_pspr.cpp, g_game.cpp, etc.) still
++// `#include <QzDoom/VrCommon.h>` and reference a small subset of its extern
++// globals/CVars directly, so for M1 (no VR yet, per
++// docs/implementation-plan.md) this stub declares just enough to satisfy
++// those references with inert defaults. The real WebXR bridge (M4+) will
++// replace this with an engine-facing VRPose/VRControllerState abstraction
++// per the project's VR-abstraction goals; this file is not that abstraction.
++#if !defined(vrcommon_h)
++#define vrcommon_h
++
++#include "c_cvars.h"
++
++typedef float vec2_t[2];
++typedef float vec3_t[3];
++
++enum { PITCH, YAW, ROLL };
++
++EXTERN_CVAR(Int, vr_control_scheme)
++EXTERN_CVAR(Bool, vr_move_use_offhand)
++EXTERN_CVAR(Float, vr_weaponRotate)
++EXTERN_CVAR(Float, vr_snapTurn)
++EXTERN_CVAR(Float, vr_ipd)
++EXTERN_CVAR(Float, vr_weaponScale)
++EXTERN_CVAR(Bool, vr_teleport)
++EXTERN_CVAR(Bool, vr_switch_sticks)
++EXTERN_CVAR(Bool, vr_secondary_button_mappings)
++EXTERN_CVAR(Bool, vr_two_handed_weapons)
++EXTERN_CVAR(Bool, vr_crouch_use_button)
++
++extern bool qzdoom_initialised;
++
++extern bool cinemamode;
++extern float cinemamodeYaw;
++extern float cinemamodePitch;
++
++extern float playerYaw;
++extern bool resetDoomYaw;
++extern float doomYaw;
++extern bool resetPreviousPitch;
++extern float previousPitch;
++
++extern float vrFOV;
++
++extern vec3_t worldPosition;
++
++extern vec3_t hmdPosition;
++extern vec3_t hmdorientation;
++extern vec3_t positionDeltaThisFrame;
++
++extern vec3_t weaponangles;
++extern vec3_t weaponoffset;
++
++extern vec3_t offhandangles;
++extern vec3_t offhandoffset;
++
++extern bool player_moving;
++
++extern bool ready_teleport;
++extern bool trigger_teleport;
++
++void shutdownVR();
++
++bool isMultiplayer();
++float nonLinearFilter(float in);
++void rotateAboutOrigin(float v1, float v2, float rotation, vec2_t out);
++
++void QzDoom_setUseScreenLayer(bool use);
++void jni_shutdown();
++
++#endif //vrcommon_h
+diff --git c/platform/emscripten-stub/QzDoom/VrInput.h i/platform/emscripten-stub/QzDoom/VrInput.h
+new file mode 100644
+index 0000000000..b702488784
+--- /dev/null
++++ i/platform/emscripten-stub/QzDoom/VrInput.h
+@@ -0,0 +1,13 @@
++// Stand-in for QuestZDoom's Projects/Android/jni/QzDoom/VrInput.h -- see the
++// comment in the sibling VrCommon.h stub for why this exists. g_game.cpp is
++// the only engine file that includes <QzDoom/VrInput.h> directly, and it
++// only needs what VrCommon.h already provides (it declares its own extern
++// vec3_t hmdorientation / VR_GetMove() locally); the real header's
++// HandleInput_Default()/ovrInputStateTrackedRemote declarations are Oculus
++// SDK types this build has no use for.
++#if !defined(vrinput_h)
++#define vrinput_h
++
++#include "VrCommon.h"
++
++#endif //vrinput_h
+diff --git c/platform/emscripten-stub/vr_stub.cpp i/platform/emscripten-stub/vr_stub.cpp
+new file mode 100644
+index 0000000000..5cdbe4efad
+--- /dev/null
++++ i/platform/emscripten-stub/vr_stub.cpp
+@@ -0,0 +1,71 @@
++// Definitions for the globals declared in QzDoom/VrCommon.h (see that
++// file's header comment). VR is not wired up yet for the Emscripten build
++// (docs/implementation-plan.md M1-M3 come before WebXR in M4+), so every
++// value here is an inert default: no VR is active, no movement/rotation is
++// injected, nothing is ever true.
++#include <cstdint>
++#include "QzDoom/VrCommon.h"
++
++bool qzdoom_initialised = false;
++
++bool cinemamode = false;
++float cinemamodeYaw = 0;
++float cinemamodePitch = 0;
++
++float playerYaw = 0;
++bool resetDoomYaw = false;
++float doomYaw = 0;
++bool resetPreviousPitch = false;
++float previousPitch = 0;
++
++float vrFOV = 90;
++
++vec3_t worldPosition = { 0, 0, 0 };
++
++vec3_t hmdPosition = { 0, 0, 0 };
++vec3_t hmdorientation = { 0, 0, 0 };
++vec3_t positionDeltaThisFrame = { 0, 0, 0 };
++
++vec3_t weaponangles = { 0, 0, 0 };
++vec3_t weaponoffset = { 0, 0, 0 };
++
++vec3_t offhandangles = { 0, 0, 0 };
++vec3_t offhandoffset = { 0, 0, 0 };
++
++bool player_moving = false;
++
++bool ready_teleport = false;
++bool trigger_teleport = false;
++
++// Declared extern by g_game.cpp/doomstat.h directly (not via VrCommon.h).
++float snapTurn = 0;
++bool weaponStabilised = false;
++
++void shutdownVR() {}
++
++float QzDoom_GetFOV() { return 90.f; }
++void QzDoom_GetScreenRes(uint32_t *width, uint32_t *height) {}
++void QzDoom_Vibrate(float duration, int channel, float intensity) {}
++void VR_HapticEvent(const char *event, int position, int intensity, float angle, float yHeight) {}
++
++bool isMultiplayer() { return false; }
++float nonLinearFilter(float in) { return in; }
++void rotateAboutOrigin(float v1, float v2, float rotation, vec2_t out) { out[0] = v1; out[1] = v2; }
++
++void QzDoom_setUseScreenLayer(bool use) {}
++void jni_shutdown() {}
++
++// g_game.cpp declares this itself (extern) and calls it every tic; with no
++// VR input source yet, report no movement.
++void VR_GetMove(float *joy_forward, float *joy_side, float *hmd_forward, float *hmd_side,
++	float *up, float *yaw, float *pitch, float *roll)
++{
++	*joy_forward = 0;
++	*joy_side = 0;
++	*hmd_forward = 0;
++	*hmd_side = 0;
++	*up = 0;
++	*yaw = 0;
++	*pitch = 0;
++	*roll = 0;
++}
+diff --git c/src/CMakeLists.txt i/src/CMakeLists.txt
+index 7a25c4d807..d77e1db2b0 100644
+--- c/src/CMakeLists.txt
++++ i/src/CMakeLists.txt
+@@ -181,7 +181,21 @@ else()
+ 	endif()
+ 
+ 	# Non-Windows version also needs SDL except native OS X backend
+-	if( NOT APPLE OR NOT OSX_COCOA_BACKEND )
++	if( EMSCRIPTEN )
++		# Emscripten provides SDL2 as a linker-flag-activated port (-sUSE_SDL=2):
++		# headers and the .a are supplied by emcc itself, there is nothing on
++		# disk for find_package(SDL2)'s FIND_PATH/FIND_LIBRARY to locate.
++		set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -sUSE_SDL=2" )
++		set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL=2" )
++		set( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sUSE_SDL=2" )
++
++		# A handful of core gameplay files #include <QzDoom/VrCommon.h> (the
++		# Android/Oculus VR glue's globals) -- see
++		# platform/emscripten-stub/QzDoom/VrCommon.h for why this stands in
++		# for it until the real WebXR bridge (M4+) exists.
++		include_directories( ${CMAKE_CURRENT_SOURCE_DIR}/../platform/emscripten-stub )
++		set( EMSCRIPTEN_STUB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../platform/emscripten-stub/vr_stub.cpp )
++	elseif( NOT APPLE OR NOT OSX_COCOA_BACKEND )
+ 		find_package( SDL2 REQUIRED )
+ 		include_directories( "${SDL2_INCLUDE_DIR}" )
+ 		set( ZDOOM_LIBS ${ZDOOM_LIBS} "${SDL2_LIBRARY}" )
+@@ -1102,6 +1116,7 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
+ 	${NOT_COMPILED_SOURCE_FILES}
+ 	__autostart.cpp
+ 	${SYSTEM_SOURCES}
++	${EMSCRIPTEN_STUB_SOURCES}
+ 	${FASTMATH_SOURCES}
+ 	${PCH_SOURCES}
+ 	x86.cpp
+diff --git c/src/cmdlib.cpp i/src/cmdlib.cpp
+index 3d66dfad84..4ce3bb5514 100644
+--- c/src/cmdlib.cpp
++++ i/src/cmdlib.cpp
+@@ -29,7 +29,7 @@
+ #include <unistd.h>
+ #include <sys/types.h>
+ #include <pwd.h>
+-#if !defined(__sun)
++#if !defined(__sun) && !defined(__EMSCRIPTEN__)
+ #include <fts.h>
+ #endif
+ #endif
+diff --git c/src/d_main.cpp i/src/d_main.cpp
+index df3bcda9df..7b0494b62c 100644
+--- c/src/d_main.cpp
++++ i/src/d_main.cpp
+@@ -3025,6 +3025,14 @@ int D_DoomMain()
+ 	return ret;
+ }
+ 
++#ifdef __ANDROID__
++// VR_DoomMain is the JNI entry point QzDoom_OpenXR.cpp calls directly on
++// Android instead of going through a normal platform main() -- see
++// docs/questzdoom-architecture.md. It redeclares Args (normally defined
++// once by the platform's own i_main.cpp, e.g. posix/sdl/i_main.cpp or
++// win32/i_main.cpp) because Android has no such platform main; guarded so
++// non-Android builds don't get a duplicate "Args" definition.
++
+ // The command line arguments.
+ FArgs *Args;
+ 
+@@ -3034,6 +3042,7 @@ void VR_DoomMain(int argc, char** argv)
+     Args = new FArgs(argc, argv);
+     D_DoomMain ();
+ }
++#endif
+ 
+ //==========================================================================
+ //
+diff --git c/src/gl/stereo3d/gl_stereo_cvars.cpp i/src/gl/stereo3d/gl_stereo_cvars.cpp
+index 1b0277a845..b7553b1dfd 100644
+--- c/src/gl/stereo3d/gl_stereo_cvars.cpp
++++ i/src/gl/stereo3d/gl_stereo_cvars.cpp
+@@ -108,9 +108,20 @@ void Stereo3DMode::setCurrentMode(const Stereo3DMode& mode) {
+ }
+ 
+ /* static */
+-const Stereo3DMode& Stereo3DMode::getCurrentMode() 
++const Stereo3DMode& Stereo3DMode::getCurrentMode()
+ {
++	// OpenXRDeviceMode (gl_openxrdevice.cpp) is Quest/Android-only glue that
++	// this build does not compile -- see docs/questzdoom-architecture.md.
++	// Unconditionally selecting it here (as upstream does, since it only
++	// ever ships for Android) leaves every other target with no VR mode to
++	// fall back to; MonoView is the normal non-VR desktop/web rendering
++	// path (see getMonoMode() below) and is what WebXR M4+ will eventually
++	// replace with its own Stereo3DMode.
++#ifdef __ANDROID__
+ 	setCurrentMode(OpenXRDeviceMode::getInstance());
++#else
++	setCurrentMode(MonoView::getInstance());
++#endif
+ 	return *currentStereo3DMode;
+ }
+ 
+diff --git c/src/gl/system/gl_framebuffer.h i/src/gl/system/gl_framebuffer.h
+index 242dd593e3..2c5fc9c054 100644
+--- c/src/gl/system/gl_framebuffer.h
++++ i/src/gl/system/gl_framebuffer.h
+@@ -4,7 +4,13 @@
+ #ifdef _WIN32
+ #include "win32gliface.h"
+ #else
+-#include "glvideo.h"
++// posix/nosdl/glvideo.h (NoSDLGLFB) is dead code in this branch: it is not
++// referenced anywhere in src/CMakeLists.txt's source lists -- only Windows
++// and Android ship from this fork, so this generic-POSIX "else" branch was
++// evidently never exercised. posix/sdl/sdlglvideo.h's SDLGLFB (implemented
++// in posix/sdl/sdlglvideo.cpp) is the real SDL-windowing GL video base for
++// this backend -- see docs/questzdoom-architecture.md.
++#include "sdlglvideo.h"
+ #endif
+ 
+ #include <memory>
+@@ -18,10 +24,9 @@ class OpenGLFrameBuffer : public Win32GLFrameBuffer
+ {
+ 	typedef Win32GLFrameBuffer Super;
+ #else
+-//#include "sdlglvideo.h"
+-class OpenGLFrameBuffer : public NoSDLGLFB
++class OpenGLFrameBuffer : public SDLGLFB
+ {
+-	typedef NoSDLGLFB Super;	//[C]commented, DECLARE_CLASS defines this in linux
++	typedef SDLGLFB Super;
+ #endif
+ 
+ 
+@@ -82,7 +87,9 @@ public:
+ 
+ 	void SetVSync(bool vsync);
+ 
+-	void ScaleCoordsFromWindow(int16_t &x, int16_t &y) override;
++	// SDLGLFB (unlike the unused NoSDLGLFB) does not declare this virtual;
++	// it's only ever called on the concrete OpenGLFrameBuffer type.
++	void ScaleCoordsFromWindow(int16_t &x, int16_t &y);
+ 
+ 	bool HWGammaActive = false;			// Are we using hardware or software gamma?
+ 	std::shared_ptr<FGLDebug> mDebug;	// Debug API
+diff --git c/src/gl/system/gl_load.c i/src/gl/system/gl_load.c
+index cbdef1f56f..daec8af554 100644
+--- c/src/gl/system/gl_load.c
++++ i/src/gl/system/gl_load.c
+@@ -108,7 +108,32 @@ static void *MOBILE_GetProcAddress(const char* name)
+ 
+ #endif
+ 
++#if defined(__EMSCRIPTEN__)
++/* WebGL2/GLES3 has no equivalent of these desktop-GL4-era extensions
++ * (ARB_buffer_storage, ARB_shader_storage_buffer_object, etc. -- see
++ * docs/questzdoom-architecture.md); report every one of them as absent
++ * exactly like a real GL implementation lacking the extension would,
++ * rather than pulling in an EGL/GLX-style loader that has nothing to load. */
++static void *Emscripten_GetProcAddress(const char *name)
++{
++	(void)name;
++	return NULL;
++}
++#endif
++
++/* This was unconditionally pinned to MOBILE_GetProcAddress regardless of
++ * platform, even though AppleGLGetProcAddress/PosixGetProcAddress above are
++ * only ever defined, never called -- i.e. this file's non-mobile GL
++ * extension loading was already broken before the Emscripten port. */
++#if defined(__APPLE__)
++#define IntGetProcAddress(name) AppleGLGetProcAddress((const char*)name)
++#elif defined(__EMSCRIPTEN__)
++#define IntGetProcAddress(name) Emscripten_GetProcAddress((const char*)name)
++#elif defined(__MOBILE__)
+ #define IntGetProcAddress(name) MOBILE_GetProcAddress((const char*)name)
++#elif defined(__sgi) || defined (__sun) || defined(__unix__)
++#define IntGetProcAddress(name) PosixGetProcAddress((const GLubyte*)name)
++#endif
+ 
+ int ogl_ext_ARB_buffer_storage = ogl_LOAD_FAILED;
+ int ogl_ext_ARB_shader_storage_buffer_object = ogl_LOAD_FAILED;
+diff --git c/src/gl/system/gl_swframebuffer.h i/src/gl/system/gl_swframebuffer.h
+index 007688ea0d..e92ee4d303 100644
+--- c/src/gl/system/gl_swframebuffer.h
++++ i/src/gl/system/gl_swframebuffer.h
+@@ -18,10 +18,13 @@ class OpenGLSWFrameBuffer : public Win32GLFrameBuffer
+ {
+ 	typedef Win32GLFrameBuffer Super;
+ #else
+-#include "glvideo.h"
+-class OpenGLSWFrameBuffer : public NoSDLGLFB
++// See the matching comment in gl_framebuffer.h: posix/nosdl/glvideo.h
++// (NoSDLGLFB) is dead code in this branch; posix/sdl/sdlglvideo.h's SDLGLFB
++// is the real SDL-windowing GL video base.
++#include "sdlglvideo.h"
++class OpenGLSWFrameBuffer : public SDLGLFB
+ {
+-	typedef NoSDLGLFB Super;	//[C]commented, DECLARE_CLASS defines this in linux
++	typedef SDLGLFB Super;
+ #endif
+ 
+ 
+diff --git c/src/gl/system/gl_system.h i/src/gl/system/gl_system.h
+index a5e3dab2f1..2aa55ade5b 100644
+--- c/src/gl/system/gl_system.h
++++ i/src/gl/system/gl_system.h
+@@ -41,6 +41,13 @@
+ 
+ #ifdef __MOBILE__
+ #define ES_VERSION_STR "#version 310 es"
++#elif defined(__EMSCRIPTEN__)
++// This is live code reached whenever the runtime gl.es flag is set (see
++// gl_shader.cpp/gl_shaderprogram.cpp/gl_swframebuffer.cpp), not just an
++// Android-only path -- WebGL2 corresponds to GLSL ES 3.00, not the ES 3.10
++// mobile targets (which assume compute/SSBO support WebGL2 doesn't have;
++// see docs/questzdoom-architecture.md).
++#define ES_VERSION_STR "#version 300 es"
+ #endif
+ 
+ #ifdef _MSC_VER
+diff --git c/src/menu/menudef.cpp i/src/menu/menudef.cpp
+index 9b20e5ac37..17d4add692 100644
+--- c/src/menu/menudef.cpp
++++ i/src/menu/menudef.cpp
+@@ -1629,8 +1629,10 @@ void M_CreateMenus()
+ 	{
+ 		I_BuildMIDIMenuList(*opt);
+ 	}
++#ifndef NO_OPENAL
++	// oalsound.cpp only defines these inside its own #ifndef NO_OPENAL block.
+ 	opt = OptionValues.CheckKey(NAME_Aldevices);
+-	if (opt != nullptr) 
++	if (opt != nullptr)
+ 	{
+ 		I_BuildALDeviceList(*opt);
+ 	}
+@@ -1639,6 +1641,7 @@ void M_CreateMenus()
+ 	{
+ 		I_BuildALResamplersList(*opt);
+ 	}
++#endif
+ 	opt = OptionValues.CheckKey(NAME_PlayerTeam);
+ 	if (opt != nullptr)
+ 	{
+diff --git c/src/posix/i_system.h i/src/posix/i_system.h
+index 32693f0edb..dc7c33cb45 100644
+--- c/src/posix/i_system.h
++++ i/src/posix/i_system.h
+@@ -142,6 +142,10 @@ inline const char *I_FindName(findstate_t *fileinfo)
+ #define FA_DIREC	8
+ #define FA_ARCH		16
+ 
++#ifndef __EMSCRIPTEN__
++// Emscripten's <string.h> already declares a real, linkable strlwr()
++// (via its cache/sysroot/include/compat/string.h shim); redeclaring it
++// static here is a storage-class conflict.
+ static inline char *strlwr(char *str)
+ {
+ 	char *ptr = str;
+@@ -152,5 +156,6 @@ static inline char *strlwr(char *str)
+ 	}
+ 	return str;
+ }
++#endif
+ 
+ #endif
+diff --git c/src/posix/sdl/hardware.cpp i/src/posix/sdl/hardware.cpp
+index 753434fec1..c93b0fada3 100644
+--- c/src/posix/sdl/hardware.cpp
++++ i/src/posix/sdl/hardware.cpp
+@@ -246,7 +246,7 @@ void I_ClosestResolution (int *width, int *height, int bits)
+ EXTERN_CVAR(Int, vid_maxfps);
+ EXTERN_CVAR(Bool, cl_capfps);
+ 
+-#if !defined(__APPLE__) && !defined(__OpenBSD__)
++#if !defined(__APPLE__) && !defined(__OpenBSD__) && !defined(__EMSCRIPTEN__)
+ Semaphore FPSLimitSemaphore;
+ 
+ static void FPSLimitNotify(sigval val)
+diff --git c/src/posix/sdl/sdlglvideo.cpp i/src/posix/sdl/sdlglvideo.cpp
+index 50f9f10edf..581dfed456 100644
+--- c/src/posix/sdl/sdlglvideo.cpp
++++ i/src/posix/sdl/sdlglvideo.cpp
+@@ -531,7 +531,7 @@ void SDLGLFB::NewRefreshRate ()
+ 
+ void SDLGLFB::SwapBuffers()
+ {
+-#if !defined(__APPLE__) && !defined(__OpenBSD__)
++#if !defined(__APPLE__) && !defined(__OpenBSD__) && !defined(__EMSCRIPTEN__)
+ 	if (vid_maxfps && !cl_capfps)
+ 	{
+ 		SEMAPHORE_WAIT(FPSLimitSemaphore)
+diff --git c/src/posix/sdl/sdlglvideo.h i/src/posix/sdl/sdlglvideo.h
+new file mode 100644
+index 0000000000..798131e285
+--- /dev/null
++++ i/src/posix/sdl/sdlglvideo.h
+@@ -0,0 +1,150 @@
++#ifndef __SDLGLVIDEO_H__
++#define __SDLGLVIDEO_H__
++
++#include "hardware.h"
++#include "v_video.h"
++#include <SDL.h>
++#include "gl/system/gl_system.h"
++
++EXTERN_CVAR (Float, dimamount)
++EXTERN_CVAR (Color, dimcolor)
++
++struct FRenderer;
++FRenderer *gl_CreateInterface();
++
++class SDLGLVideo : public IVideo
++{
++ public:
++	SDLGLVideo (int parm);
++	~SDLGLVideo ();
++
++	EDisplayType GetDisplayType () { return DISPLAY_Both; }
++	void SetWindowedScale (float scale);
++
++	DFrameBuffer *CreateFrameBuffer (int width, int height, bool bgra, bool fs, DFrameBuffer *old);
++
++	void StartModeIterator (int bits, bool fs);
++	bool NextMode (int *width, int *height, bool *letterbox);
++	bool SetResolution (int width, int height, int bits);
++
++	void SetupPixelFormat(bool allowsoftware, int multisample, const int *glver);
++
++private:
++	int IteratorMode;
++	int IteratorBits;
++};
++
++// Common base for the software (SDLFB) and OpenGL (SDLGLFB) framebuffers;
++// both just need an SDL_Window to hand back to the input/console code.
++class SDLBaseFB : public DFrameBuffer
++{
++	typedef DFrameBuffer Super;
++public:
++	using DFrameBuffer::DFrameBuffer;
++	virtual SDL_Window *GetSDLWindow() = 0;
++
++	friend class SDLGLVideo;
++};
++
++class SDLGLFB : public SDLBaseFB
++{
++	typedef SDLBaseFB Super;
++public:
++	// this must have the same parameters as the Windows version, even if they are not used!
++	SDLGLFB (void *hMonitor, int width, int height, int, int, bool fullscreen, bool bgra);
++	~SDLGLFB ();
++
++	void ForceBuffering (bool force);
++	bool Lock(bool buffered);
++	bool Lock ();
++	void Unlock();
++	bool IsLocked ();
++
++	bool IsValid ();
++	bool IsFullscreen ();
++
++	virtual void SetVSync( bool vsync );
++	void SwapBuffers();
++
++	void NewRefreshRate ();
++
++	friend class SDLGLVideo;
++
++	int GetClientWidth();
++	int GetClientHeight();
++
++	virtual void ScaleCoordsFromWindow(int16_t &x, int16_t &y);
++
++	SDL_Window *GetSDLWindow() override { return Screen; }
++
++	virtual int GetTrueHeight() { return GetClientHeight(); }
++protected:
++	bool CanUpdate();
++	void SetGammaTable(uint16_t *tbl);
++	void ResetGammaTable();
++	void InitializeState();
++
++	SDLGLFB () {}
++	uint8_t GammaTable[3][256];
++	bool UpdatePending;
++
++	SDL_Window *Screen;
++
++	SDL_GLContext GLContext;
++
++	void UpdateColors ();
++
++	int m_Lock;
++	Uint16 m_origGamma[3][256];
++	bool m_supportsGamma;
++};
++
++// Software-rendered framebuffer, blitted via an SDL_Renderer/SDL_Texture
++// (or straight to the window surface as a fallback).
++class SDLFB : public SDLBaseFB
++{
++	typedef SDLBaseFB Super;
++public:
++	SDLFB (int width, int height, bool bgra, bool fullscreen, SDL_Window *oldwin);
++	~SDLFB ();
++
++	bool IsValid ();
++	int GetPageCount ();
++	bool Lock (bool buffered);
++	bool Relock ();
++	void Unlock ();
++	void Update ();
++	PalEntry *GetPalette ();
++	void UpdatePalette ();
++	bool SetGamma (float gamma);
++	bool SetFlash (PalEntry rgb, int amount);
++	void GetFlash (PalEntry &rgb, int &amount);
++	void GetFlashedPalette (PalEntry pal[256]);
++	void SetFullscreen (bool fullscreen);
++	bool IsFullscreen ();
++	void SetVSync (bool vsync);
++	void ScaleCoordsFromWindow(int16_t &x, int16_t &y);
++
++	SDL_Window *GetSDLWindow() override { return Screen; }
++
++protected:
++	void UpdateColors ();
++	void ResetSDLRenderer ();
++
++	SDL_Window *Screen;
++	SDL_Renderer *Renderer;
++	SDL_Texture *Texture;
++	SDL_Surface *Surface;
++	bool UsingRenderer;
++	bool NotPaletted;
++
++	uint8_t GammaTable[3][256];
++	PalEntry SourcePalette[256];
++	PalEntry Flash;
++	int FlashAmount;
++	bool NeedPalUpdate;
++	bool NeedGammaUpdate;
++	bool UpdatePending;
++};
++
++#endif
+diff --git c/src/posix/sdl/sdlvideo.cpp i/src/posix/sdl/sdlvideo.cpp
+index 5eb8a7bf36..47b88abeea 100644
+--- c/src/posix/sdl/sdlvideo.cpp
++++ i/src/posix/sdl/sdlvideo.cpp
+@@ -231,7 +231,7 @@ void SDLFB::Update ()
+ 
+ 	DrawRateStuff ();
+ 
+-#if !defined(__APPLE__) && !defined(__OpenBSD__)
++#if !defined(__APPLE__) && !defined(__OpenBSD__) && !defined(__EMSCRIPTEN__)
+ 	if(vid_maxfps && !cl_capfps)
+ 	{
+ 		SEMAPHORE_WAIT(FPSLimitSemaphore)
+diff --git c/src/posix/sdl/sdlvideo.h i/src/posix/sdl/sdlvideo.h
+new file mode 100644
+index 0000000000..2129f5a622
+--- /dev/null
++++ i/src/posix/sdl/sdlvideo.h
+@@ -0,0 +1,3 @@
++#include "hardware.h"
++#include "v_video.h"
++#include "sdlglvideo.h"
+diff --git c/tools/lemon/CMakeLists.txt i/tools/lemon/CMakeLists.txt
+index 71418eda5a..e4ffa8b0c6 100644
+--- c/tools/lemon/CMakeLists.txt
++++ i/tools/lemon/CMakeLists.txt
+@@ -6,6 +6,14 @@ if( NOT CMAKE_CROSSCOMPILING )
+ 	add_executable( lemon lemon.c )
+ 	set( CROSS_EXPORTS ${CROSS_EXPORTS} lemon PARENT_SCOPE )
+ 
++	# lemon.c is 1990s K&R-style C (unmodified upstream SQLite lemon) and its
++	# loose function-pointer casts are hard errors under GCC >= 14's default
++	# C standard. This is a host-only build tool, not shipped code, so relax
++	# to the standard it was actually written against instead of patching it.
++	if( CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" )
++		target_compile_options( lemon PRIVATE -std=gnu89 -Wno-implicit-function-declaration )
++	endif()
++
+ 	# Lemon wants lempar.c in its directory
+ 	add_custom_command( TARGET lemon
+ 		POST_BUILD
