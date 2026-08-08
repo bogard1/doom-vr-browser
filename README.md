@@ -124,6 +124,13 @@ This project contains **no commercial Doom game data**. You must supply
 your own legally-obtained WAD file. It is read entirely client-side and is
 never uploaded, cached, or transmitted anywhere.
 
-`engine/` (DrBeef/gzdoom, itself derived from GZDoom/LZDoom/ZDoom) is
-licensed under GPLv3 — see `engine/LICENSE` and `engine/docs/licenses/` for
-full attribution and third-party license terms.
+This whole project — including `web/` and `scripts/`, not just `engine/` —
+is licensed under the **GPLv3** (see [`LICENSE`](LICENSE)). `engine/`
+(DrBeef/gzdoom, itself derived from GZDoom/LZDoom/ZDoom/id Software's Doom
+source) is GPLv3-licensed upstream (declared in its own README; it ships no
+root `LICENSE` file of its own, only `engine/docs/licenses/` for
+third-party attribution — gdtoa, zlib, dumb, etc.). `web/`'s WASM↔JS bridge
+calls directly into the engine binary's exported functions (`ccall`,
+shared linear memory), not arm's-length process separation, so it forms a
+single combined work with `engine/` under the GPL rather than a separately
+licensable component.
