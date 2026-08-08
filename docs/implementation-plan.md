@@ -514,6 +514,101 @@ sound *effects* (as opposed to music) are actually audible hasn't been
 checked yet (only that `OpenALSoundRenderer` initializes and the
 `AudioContext` reaches `"running"`).
 
+**Keyboard input fixed, 2026-08-08.** User asked whether keyboard gameplay
+should work yet. It didn't: `I_StartTic()` — the function that calls
+`SDL_PollEvent` and feeds keyboard/mouse events into `D_PostEvent` — was
+never called anywhere in the live tic loop. This is **not** an
+Emscripten-specific bug: `git blame` traces the commented-out call in
+`NetUpdate()` (`src/d_net.cpp:993`) to commit `c57551034a1`, "Merge
+QuestZDoom source into lzdoom mobile" (2021-06-19) — QuestZDoom disabled the
+classic desktop SDL input pump because on real Quest hardware input comes
+from Oculus VR controllers through a separate Android-side native module
+(there is no `VrInput.cpp` implementation in this source tree at all, only
+the headers our `platform/emscripten-stub/` currently stubs out). The
+title→credits→demo cycling observed in earlier manual testing was the
+automatic demo-advance timer, not a response to keypresses — confirmed by
+instrumenting `I_GetEvent()` with a temporary `fprintf` and reproducing in a
+real Chrome tab via `claude-in-chrome`: before the fix, zero `SDL_PollEvent`
+calls ever returned an event (verified two ways — the diagnostic printed
+nothing, and the format string itself was dead-stripped from the final
+linked `.wasm` by `wasm-ld`, proving the whole code path was unreachable).
+Fixed with a one-line uncomment of `I_StartTic();` in `NetUpdate()` (the
+`TryRunTics()`-driven path used whenever `singletics` is false, i.e. always
+during normal play — the `d_main.cpp` copies of this same commented call
+are inside the `singletics` demo/timedemo branch and were left alone).
+Verified end-to-end after rebuilding: `SDL_KEYDOWN`/`SDL_KEYUP` (types
+`768`/`769`) now appear in the event queue on a real keypress, and pressing
+Return for real genuinely advances the title screen to the skill-select
+menu. Diagnostic removed before committing; patch regenerated.
+
+**Third `std::thread` crash found + fixed, 2026-08-08.** With keyboard input
+working, the user actually started a level for the first time and hit
+`Uncaught std::__2::system_error: thread constructor failed: Not supported`
+from `DrawerThreads::StartThreads()` (`src/swrenderer/drawers/r_thread.cpp`)
+— the software/poly-renderer's multithreaded span/column drawer pool, a
+third independent `std::thread` call site (distinct from the OpenAL music
+thread fixed earlier). Menu navigation never hit it because 2D menu/title
+drawing doesn't route through `DrawerCommandQueue`; the real 3D level scene
+does (`swrenderer/scene/r_scene.cpp`, `polyrenderer/poly_renderthread.cpp`).
+`r_multithreaded` (the CVar gating this) defaults to `1`, and even
+`r_multithreaded == 0` still spawned exactly one real `std::thread` in the
+old code — not a true single-threaded fallback. Investigated
+`DrawerCommandQueue::Push()` (`r_thread.h`) and found it already has a
+genuine thread-free inline-execute branch, taken whenever
+`r_multithreaded != 0` is false: `command.Execute(&threads->single_core_thread)`,
+no `std::thread` involved. Confirmed `DrawerThreads::Execute()` early-returns
+before ever calling `StartThreads()` when the command list is empty, which
+it always is once `Push()` stops enqueueing — so forcing the CVar's
+*compiled default* to `0` under `__EMSCRIPTEN__` is a complete, root-cause
+fix, not a workaround (same smallest-correct-fix pattern as every other fix
+this session). No bundled config overrides the default (grepped
+`wadsrc*/` — none), and this build's MEMFS mount is fresh every page load,
+so no persisted `CVAR_GLOBALCONFIG` value can resurrect `1` across sessions.
+Verified in real Chrome: navigated title → new game → skill select → MAP01
+loads and renders (visible level geometry, HUD, weapon sprite). The `Up`
+arrow "movement" observed in that test turned out to be a false positive —
+see the next entry.
+
+**No default WASD/mouse controls exist — found and fixed, 2026-08-08.** User
+asked which buttons move/switch weapons/fire. Checking revealed the
+apparent movement in the previous test was actually just a nearby animated
+lift/gate, not the player: querying the live engine's own console
+(`bind`/`bind mouse1`, real Chrome, output mirrors to the browser console
+via `Module.print`) showed **zero** keyboard/mouse bindings for
+`+forward`/`+back`/`+moveleft`/`+moveright`/`+attack` — only `Space
+"+use"` and gamepad-only binds (`RTrigger "+attack"`, `Pad_A "+use"`)
+existed. Root cause, found via `git log -p -- wadsrc/static/defbind1.txt`:
+commit `2462d71885`, "removed binds that are not used on questzdoom"
+(2021-10-12, same QuestZDoom fork, after the merge commit that broke
+keyboard input), deleted the entire "modern" WASD+mouse control scheme —
+QuestZDoom expects real VR-controller input instead, which doesn't exist in
+this browser port. `defbind0.txt`/`defbind2.txt`/`defbind3.txt` (the other
+control-scheme presets) were stripped the same way; `defbinds.txt`
+(universal, not stripped) only ever had menu/UI/automap binds, never
+movement. Fixed by restoring `wadsrc/static/defbind1.txt`'s exact original
+content (recovered from the git history of the same file, not invented):
+```
+w +forward
+s +back
+a +moveleft
+d +moveright
+e +jump
+x crouch
+mouse2 +altattack
+mouse3 +speed
+mouse1 +attack
+```
+`k_modern` (which DEFBIND lump loads) defaults to `1`, so this is live by
+default. This is a pure data-file change (packed into `lzdoom.pk3` by the
+`zipdir` build step) — no C++ recompile needed, `bash scripts/build-wasm.sh`
+only re-zipped the pk3. Verified in real Chrome: `w` now visibly walks the
+player forward through MAP01 (confirmed against the corrected baseline,
+distinct from the earlier lift/gate false positive), and `mouse1` clicks
+fire the pistol (ammo counter dropped 50→49 in the HUD). Weapon switching
+already worked via the universal `defbinds.txt` binds (number keys `1`-`0`
+→ `slot N`, mouse wheel → `weapnext`/`weapprev`) since those were never
+stripped. Patch regenerated (1430 lines).
+
 ---
 
 ## M4 — WebXR session
@@ -544,6 +639,47 @@ yet, per Phase 3 of the brief.
 - Head pose can be read (log to debug overlay).
 - Controller input sources can be enumerated (log to debug overlay).
 - No regression to M3's desktop-mode gameplay.
+
+**Status: implemented 2026-08-08, verified as far as desktop Chrome allows.**
+`web/src/xr.ts` is a new, self-contained module — deliberately not wired
+into `engine.ts` at all, per "no engine integration yet": it creates its
+*own* `<canvas>`/WebGL2 context (`{ xrCompatible: true }`) purely to satisfy
+`XRWebGLLayer`'s constructor requirement, entirely separate from the
+Emscripten canvas M3 owns, so there's no shared-context/shared-canvas risk.
+`main.ts` gained an "Enter VR" button (disabled until
+`isImmersiveVRSupported()` resolves) that toggles enter/exit and relabels
+itself from the session's own `end` event, independent of whether a WAD is
+loaded — matches the brief's framing of this as a standalone capability
+check, not gameplay.
+
+Session loop: `requestReferenceSpace("local-floor")` with a `"local"`
+fallback (some runtimes don't support floor-relative tracking), then a
+`session.requestAnimationFrame` loop that calls `getViewerPose()` and reads
+`session.inputSources` — both throttled to ~once/second
+(`LOG_EVERY_N_FRAMES = 90`) so the debug panel doesn't scroll at
+90-144 lines/sec once eventually running with tracking. Needed adding
+`@types/webxr` as a `devDependency` and adding `"webxr"` to `tsconfig.json`'s
+`"types"` array (it's excluded from auto-inclusion by the existing
+`"types": ["vite/client"]` restriction) — `npx tsc --noEmit` is clean.
+
+Verified in real Chrome (no headset, no WebXR emulator extension
+installed): `navigator.xr` exists and `window.isSecureContext` is `true` on
+`http://localhost` (Chrome treats localhost as secure — no HTTPS/mkcert
+needed for *this* kind of dev testing), but `isSessionSupported("immersive-vr")`
+correctly resolves `false`, so the button stays disabled and shows "WebXR
+immersive-vr is not supported on this browser/device." — the negative path
+works exactly as designed, fails safe, throws nothing. Confirmed zero
+regression: WAD drop → Start Doom → real gameplay in MAP01 still works
+unchanged after these `main.ts` edits.
+
+**Not yet verified** (needs either real Quest Browser or the WebXR API
+Emulator Chrome extension, neither available in this sandboxed browser):
+the actual `requestSession("immersive-vr")` → `XRWebGLLayer` →
+`getViewerPose()`/`inputSources` positive path. Real-device testing over
+LAN will also need HTTPS (self-signed cert / `mkcert`) per the brief's own
+risk note — `http://localhost` being secure doesn't extend to
+`http://<lan-ip>:5173` from the Quest Browser. Not set up yet; flagged as
+the concrete next step before this can be tried on real hardware.
 
 ---
 

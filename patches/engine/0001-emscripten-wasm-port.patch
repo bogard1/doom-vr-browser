@@ -586,6 +586,19 @@ index df3bcda9df..d024120233 100644
  
  //==========================================================================
  //
+diff --git c/src/d_net.cpp i/src/d_net.cpp
+index 544822f6d3..781a6f176a 100644
+--- c/src/d_net.cpp
++++ i/src/d_net.cpp
+@@ -990,7 +990,7 @@ void NetUpdate (void)
+ 	// build new ticcmds for console player
+ 	for (i = 0; i < newtics; i++)
+ 	{
+-		//I_StartTic ();
++		I_StartTic ();
+ 		D_ProcessEvents ();
+ 		if (pauseext || (maketic - gametic) / ticdup >= BACKUPTICS/2-1)
+ 			break;			// can't hold any more
 diff --git c/src/dobject.h i/src/dobject.h
 index b57f75bedf..9a0bff7b03 100644
 --- c/src/dobject.h
@@ -841,6 +854,19 @@ index 753434fec1..c93b0fada3 100644
  Semaphore FPSLimitSemaphore;
  
  static void FPSLimitNotify(sigval val)
+diff --git c/src/posix/sdl/i_input.cpp i/src/posix/sdl/i_input.cpp
+index bdf15e18ae..2ecedab51c 100644
+--- c/src/posix/sdl/i_input.cpp
++++ i/src/posix/sdl/i_input.cpp
+@@ -563,7 +563,7 @@ void MessagePump (const SDL_Event &sev)
+ void I_GetEvent ()
+ {
+ 	SDL_Event sev;
+-	
++
+ 	while (SDL_PollEvent (&sev))
+ 	{
+ 		MessagePump (sev);
 diff --git c/src/posix/sdl/i_main.cpp i/src/posix/sdl/i_main.cpp
 index 00fa15497b..a31c034a6f 100644
 --- c/src/posix/sdl/i_main.cpp
@@ -1309,6 +1335,25 @@ index a2bd511ac2..e2767eb12a 100644
  	OpenALSoundStream *stream = new OpenALSoundStream(this);
  	if (!stream->Init(callback, buffbytes, flags, samplerate, userdata))
  	{
+diff --git c/src/swrenderer/drawers/r_thread.cpp i/src/swrenderer/drawers/r_thread.cpp
+index 5e8e2cfc1e..6edd0d7e68 100644
+--- c/src/swrenderer/drawers/r_thread.cpp
++++ i/src/swrenderer/drawers/r_thread.cpp
+@@ -39,7 +39,14 @@
+ void PeekThreadedErrorPane();
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++// No -pthread support here: real std::thread creation throws. r_multithreaded == 0
++// makes DrawerCommandQueue::Push execute every command inline (see r_thread.h), which
++// keeps DrawerThreads::Execute()'s command list empty and StartThreads() unreached.
++CVAR(Int, r_multithreaded, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
++#else
+ CVAR(Int, r_multithreaded, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
++#endif
+ CVAR(Int, r_debug_draw, 0, 0);
+ 
+ /////////////////////////////////////////////////////////////////////////////
 diff --git c/src/version.h i/src/version.h
 index 220ce7c3d7..6f92463e16 100644
 --- c/src/version.h
@@ -1367,3 +1412,19 @@ index 71418eda5a..e4ffa8b0c6 100644
  	# Lemon wants lempar.c in its directory
  	add_custom_command( TARGET lemon
  		POST_BUILD
+diff --git c/wadsrc/static/defbind1.txt i/wadsrc/static/defbind1.txt
+index 7e4fa29b7c..dbf45ee12b 100644
+--- c/wadsrc/static/defbind1.txt
++++ i/wadsrc/static/defbind1.txt
+@@ -1 +1,11 @@
+ /* Default keybindings for all games */
++
++w +forward
++s +back
++a +moveleft
++d +moveright
++e +jump
++x crouch
++mouse2 +altattack
++mouse3 +speed
++mouse1 +attack

@@ -2,6 +2,7 @@ import "./style.css";
 import { readWadFile, type LoadedWad } from "./wad-loader";
 import { loadEngine, mountWad, startDoom } from "./engine";
 import { StatusLog } from "./debug";
+import { enterVR, exitVR, isImmersiveVRSupported, isInXRSession } from "./xr";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
@@ -13,6 +14,8 @@ app.innerHTML = `
     <p id="selected"></p>
 
     <button id="start" disabled>Start Doom</button>
+    <button id="enter-vr" disabled>Enter VR</button>
+    <p id="vr-support"></p>
 
     <canvas id="canvas" width="640" height="480" hidden></canvas>
 
@@ -25,6 +28,8 @@ const dropzone = document.querySelector<HTMLDivElement>("#dropzone")!;
 const fileInput = document.querySelector<HTMLInputElement>("#file-input")!;
 const selectedEl = document.querySelector<HTMLParagraphElement>("#selected")!;
 const startButton = document.querySelector<HTMLButtonElement>("#start")!;
+const enterVRButton = document.querySelector<HTMLButtonElement>("#enter-vr")!;
+const vrSupportEl = document.querySelector<HTMLParagraphElement>("#vr-support")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const status = new StatusLog(document.querySelector<HTMLDivElement>("#status")!);
 
@@ -75,5 +80,34 @@ startButton.addEventListener("click", async () => {
   } catch (err) {
     status.error(err instanceof Error ? err.message : String(err));
     startButton.disabled = false;
+  }
+});
+
+void isImmersiveVRSupported().then((supported) => {
+  enterVRButton.disabled = !supported;
+  vrSupportEl.textContent = supported
+    ? "WebXR immersive-vr is supported on this browser."
+    : "WebXR immersive-vr is not supported on this browser/device.";
+});
+
+enterVRButton.addEventListener("click", async () => {
+  if (isInXRSession()) {
+    exitVR();
+    return;
+  }
+  enterVRButton.disabled = true;
+  try {
+    await enterVR(
+      (msg) => status.log(msg),
+      () => {
+        enterVRButton.textContent = "Enter VR";
+        enterVRButton.disabled = false;
+      },
+    );
+    enterVRButton.textContent = "Exit VR";
+    enterVRButton.disabled = false;
+  } catch (err) {
+    status.error(err instanceof Error ? err.message : String(err));
+    enterVRButton.disabled = false;
   }
 });
