@@ -116,6 +116,7 @@ enterVRButton.addEventListener("click", async () => {
       (orientation, position) => {
         if (currentModule) setWebXRHeadPose(currentModule, orientation, position);
       },
+      canvas,
     );
     xrActive = true;
     if (currentModule) setWebXRActive(currentModule, true);

@@ -49,6 +49,15 @@ mkdir -p "${BUILD_DIR}"
 #   (platform/web/vr_webxr.cpp) -- listing EXPORTED_FUNCTIONS at all
 #   overrides Emscripten's implicit "_main"-only default, so _main must be
 #   repeated here or callMain stops working.
+# -sGL_TESTING=1: forces preserveDrawingBuffer:true on the Emscripten
+#   canvas's WebGL context. Without this, the canvas's backbuffer is
+#   undefined/cleared as soon as the browser compositor finishes with it,
+#   so web/src/xr.ts's interim WebXR mirror renderer (M5/M6 bridge -- see
+#   its comment) reads back a blank image when it snapshots that canvas
+#   from the separate XR session frame loop. Real per-eye M6 rendering
+#   should render directly into the XR layer's framebuffer instead of
+#   mirroring a second canvas, at which point this flag's overhead (its
+#   own comment in Emscripten's settings.js: "adds overhead") can go away.
 emcmake cmake \
 	-S "${ENGINE_DIR}" \
 	-B "${BUILD_DIR}" \
@@ -67,7 +76,7 @@ emcmake cmake \
 	-DIMPORT_EXECUTABLES="${IMPORT_EXECUTABLES}" \
 	-DNO_OPENMP=ON \
 	-DCMAKE_CXX_FLAGS="-fexceptions" \
-	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS,ccall -sEXPORTED_FUNCTIONS=_main,_VR_WebXR_SetActive,_VR_WebXR_SetHeadPose -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=16777216" \
+	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS,ccall -sEXPORTED_FUNCTIONS=_main,_VR_WebXR_SetActive,_VR_WebXR_SetHeadPose -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=16777216 -sGL_TESTING=1" \
 	"$@"
 
 cmake --build "${BUILD_DIR}"
