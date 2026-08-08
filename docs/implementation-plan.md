@@ -421,9 +421,39 @@ the user's own `DOOM2.WAD`, the canvas renders the real DOOM2 title screen
 title→credits→demo cycle and back on Enter/Escape keypresses — genuine
 interactive rendering, not a static frame. `docs/questzdoom-architecture.md`
 and this file should be treated as reflecting a **working desktop (non-VR)
-build** as of this fix; remaining loose ends before calling M3 fully closed:
-audio was never explicitly revisited after the M1 `NO_OPENAL=ON` deferral
-(untested whether sound plays), and the ~50 non-fatal `"Unknown property
+build** as of this fix.
+
+**Audio: verified working, 2026-08-08.** M1 deferred this by building with
+`NO_OPENAL=ON`; revisited by actually enabling it. `src/CMakeLists.txt`'s
+OpenAL detection had the same `find_package()`-finds-nothing-under-Emscripten
+problem as M1's SDL2 fix (§ fix log above) — Emscripten provides OpenAL as a
+linker-flag-activated port (`-lopenal`, mapping onto Web Audio) the same way
+`-sUSE_SDL=2` provides SDL2, so there's nothing on disk for `find_package`
+to locate. Unlike SDL2, though, `-lopenal` alone doesn't make headers
+resolve for `oalsound.h`'s plain `#include "al.h"`/`"alc.h"` (quoted, not
+`<AL/al.h>`) — pointed those at the `al.h`/`alc.h` this repo already vendors
+under `src/sound/thirdparty/` instead (real function prototypes, not the
+`AL_NO_PROTOTYPES`/`DYN_OPENAL` function-pointer style that header set also
+supports but we don't need, since we're linking directly against
+`-lopenal`'s real symbols, `DYN_OPENAL=OFF`). `scripts/build-wasm.sh` now
+passes `-DNO_OPENAL=OFF`.
+
+Verified end-to-end in real Chrome: engine console log shows
+`I_InitSound: Initializing OpenAL` → `Opened device Emscripten OpenAL`
+(the "unsupported OpenAL implementation, install OpenAL Soft" lines right
+after are just the engine's generic compatibility-warning heuristic
+misfiring on Emscripten's shim identifying itself differently than desktop
+OpenAL Soft -- cosmetic, not an error). Confirmed a real `AudioContext` is
+created (sample rate 48000Hz) and reaches `state: "running"` -- but **only**
+after a genuine user-initiated click; browser autoplay policy correctly
+keeps it `"suspended"` for synthetic/automation-dispatched clicks (expected,
+standard browser behavior, not a bug in this port). Practical implication
+for `web/`: real users clicking "Start Doom" satisfies this automatically
+since that's a genuine gesture; no JS-side workaround needed for the normal
+flow, but worth remembering if a future *automated* smoke test wants to
+assert on audio state.
+
+Remaining loose end: the ~50 non-fatal `"Unknown property
 'sky1'/'cluster'/'music'/etc. found in map definition"` MAPINFO-parser
 warnings noted earlier are still unexplained (engine continues past them
 without apparent ill effect, but worth checking whether they're the same

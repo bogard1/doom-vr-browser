@@ -176,7 +176,7 @@ index 0000000000..5cdbe4efad
 +	*roll = 0;
 +}
 diff --git c/src/CMakeLists.txt i/src/CMakeLists.txt
-index 7a25c4d807..d77e1db2b0 100644
+index 7a25c4d807..a23d53ffa5 100644
 --- c/src/CMakeLists.txt
 +++ i/src/CMakeLists.txt
 @@ -181,7 +181,21 @@ else()
@@ -202,7 +202,28 @@ index 7a25c4d807..d77e1db2b0 100644
  		find_package( SDL2 REQUIRED )
  		include_directories( "${SDL2_INCLUDE_DIR}" )
  		set( ZDOOM_LIBS ${ZDOOM_LIBS} "${SDL2_LIBRARY}" )
-@@ -1102,6 +1116,7 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
+@@ -195,7 +209,19 @@ else()
+ endif()
+ 
+ if( NOT NO_OPENAL )
+-	if ( NOT DYN_OPENAL )	# DYN_OPENAL uses local copies of the headers.
++	if( EMSCRIPTEN )
++		# Emscripten provides OpenAL as a linker-flag-activated port (-lopenal,
++		# mapping onto Web Audio), the same way -sUSE_SDL=2 provides SDL2 --
++		# the .a comes from emcc itself, so find_package(OpenAL) has nothing
++		# on disk to locate. Unlike SDL2, emcc's -lopenal doesn't also supply
++		# headers findable via oalsound.h's #include "al.h"/"alc.h" (a plain
++		# quoted include, not <AL/al.h>) -- point at the al.h/alc.h this repo
++		# already vendors under sound/thirdparty/ instead (real prototypes,
++		# not the AL_NO_PROTOTYPES/DYN_OPENAL function-pointer style; matches
++		# linking directly against -lopenal's real symbols).
++		include_directories( ${CMAKE_CURRENT_SOURCE_DIR}/sound/thirdparty )
++		set( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lopenal" )
++	elseif ( NOT DYN_OPENAL )	# DYN_OPENAL uses local copies of the headers.
+ 		find_package( OpenAL )
+ 		mark_as_advanced(CLEAR OPENAL_INCLUDE_DIR)
+ 		if( OPENAL_INCLUDE_DIR )
+@@ -1102,6 +1128,7 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
  	${NOT_COMPILED_SOURCE_FILES}
  	__autostart.cpp
  	${SYSTEM_SOURCES}
