@@ -39,6 +39,11 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
 // (lzdoom.pk3 -- menus, fonts, DECORATE defs; contains no game data) at the
 // path it expects alongside its own "executable". Idempotent: repeated
 // calls return the same module instance.
+// Rooted at Vite's BASE_URL (not a hardcoded leading "/") so this also
+// resolves correctly when served from a GitHub Pages project subpath
+// (e.g. /doom-vr-browser/) instead of a domain root.
+const ENGINE_BASE = `${import.meta.env.BASE_URL}engine/`;
+
 export async function loadEngine(
   canvas: HTMLCanvasElement,
   onStatus: (message: string) => void,
@@ -46,23 +51,23 @@ export async function loadEngine(
   if (!modulePromise) {
     modulePromise = (async () => {
       onStatus("Loading WASM module…");
-      const { default: createLzdoomModule } = await importEngineModule("/engine/lzdoom.js");
+      const { default: createLzdoomModule } = await importEngineModule(`${ENGINE_BASE}lzdoom.js`);
 
       const module = await createLzdoomModule({
         canvas,
         print: (text: string) => console.log("[doom]", text),
         printErr: (text: string) => console.error("[doom]", text),
-        locateFile: (path: string) => `/engine/${path}`,
+        locateFile: (path: string) => `${ENGINE_BASE}${path}`,
       });
 
       onStatus("Mounting engine resources…");
-      const pk3 = await fetchBytes("/engine/lzdoom.pk3");
+      const pk3 = await fetchBytes(`${ENGINE_BASE}lzdoom.pk3`);
       module.FS.writeFile("/lzdoom.pk3", pk3);
       // FIWadManager's constructor (d_iwad.cpp) reads its IWADINFO
       // definitions (which lump names mean "this is Doom2.wad" etc.)
       // exclusively from OPTIONALWAD, not BASEWAD -- see version.h.
       // Without this mounted, no IWAD is ever recognized.
-      const gameSupportPk3 = await fetchBytes("/engine/lz_game_support.pk3");
+      const gameSupportPk3 = await fetchBytes(`${ENGINE_BASE}lz_game_support.pk3`);
       module.FS.writeFile("/lz_game_support.pk3", gameSupportPk3);
 
       return module;
