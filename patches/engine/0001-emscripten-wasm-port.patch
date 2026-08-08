@@ -177,10 +177,10 @@ index 0000000000..5cdbe4efad
 +}
 diff --git i/platform/web/vr_webxr.cpp w/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..0856a93676
+index 0000000000..e6a1eca72b
 --- /dev/null
 +++ w/platform/web/vr_webxr.cpp
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,180 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -197,6 +197,7 @@ index 0000000000..0856a93676
 +#include "vr_webxr.h"
 +
 +#include <cmath>
++#include <emscripten/emscripten.h>
 +
 +#include "r_utility.h"
 +#include "c_cvars.h"
@@ -233,6 +234,22 @@ index 0000000000..0856a93676
 +	{
 +		g_yawDeg = g_pitchDeg = g_rollDeg = g_heightMeters = 0.0;
 +	}
++
++	// D_DoomLoop() (d_main.cpp) drives the whole engine via
++	// emscripten_set_main_loop(..., 0, 1), which defaults to
++	// EM_TIMING_RAF -- tied to the *window's* requestAnimationFrame. Once an
++	// immersive WebXR session opens, browsers commonly stop delivering that
++	// (the flat 2D canvas isn't what's being displayed anymore), which
++	// silently freezes the entire game loop, not just rendering -- ticking,
++	// input, everything. Switching to EM_TIMING_SETTIMEOUT keeps the loop
++	// running on a wall-clock timer instead, independent of window rAF, for
++	// as long as a session is open; switching back on exit restores normal
++	// vsync-paced timing so desktop play isn't needlessly burning CPU on a
++	// timer loop it doesn't need.
++	if (g_active)
++		emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 16);
++	else
++		emscripten_set_main_loop_timing(EM_TIMING_RAF, 0);
 +}
 +
 +// qx/qy/qz/qw: WebXR head orientation (XRRigidTransform.orientation) -- a

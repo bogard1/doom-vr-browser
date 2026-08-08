@@ -791,6 +791,36 @@ analysis above is analytical, not empirically confirmed. That verification,
 plus M4's still-outstanding positive-session-path check, is the user's next
 step on real hardware.
 
+**Real-hardware findings, 2026-08-08 (Quest 2, same session)**: entering VR
+showed solid black. Root cause: M4/M5 never rendered into the XR session's
+own framebuffer at all -- `web/src/xr.ts` created a separate canvas/GL
+context purely to read pose data, and never drew anything into it, while
+the Emscripten canvas kept rendering mono Doom into a *different* canvas the
+headset compositor never reads from. Fixed with an interim (not M6) mirror
+renderer: `xr.ts` now blits the Emscripten canvas into both eyes' viewports
+as a textured quad every XR frame (identical flat image both eyes, no
+per-eye depth -- M6 replaces this with real per-eye rendering straight into
+the XR layer). Requires `-sGL_TESTING=1` (`scripts/build-wasm.sh`) so the
+Emscripten canvas's WebGL context keeps `preserveDrawingBuffer:true`;
+otherwise its backbuffer is undefined by the time the separate XR frame
+loop reads it.
+
+Second finding from the same hardware test: the mirrored image was frozen
+(and, while frozen, showed corrupted colors/banding -- almost certainly a
+transitional frame caught mid-render right as the session opened, then
+never replaced because nothing re-rendered afterward). Root cause: `D_DoomLoop()`
+(`d_main.cpp`) drives the *entire* engine -- ticking and rendering alike --
+via `emscripten_set_main_loop(..., 0, 1)`, which defaults to
+`EM_TIMING_RAF` tied to the *window's* `requestAnimationFrame`. Quest
+Browser stops delivering that once an immersive session opens (the flat 2D
+canvas isn't being displayed anymore), silently freezing the whole engine,
+not just its rendering. Fixed in `vr_webxr.cpp`'s `VR_WebXR_SetActive` by
+calling `emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 16)` on VR
+session start (wall-clock timer, independent of window rAF) and switching
+back to `EM_TIMING_RAF` on exit (normal vsync-paced timing, no wasted CPU
+outside VR). Not yet re-verified on hardware -- that's the user's immediate
+next step.
+
 ---
 
 ## M6 — Stereo renderer
