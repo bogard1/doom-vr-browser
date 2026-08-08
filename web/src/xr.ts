@@ -1,9 +1,20 @@
-// WebXR session plumbing only -- no engine integration yet (that's M5+).
-// Proves out session lifecycle, head pose, and controller enumeration on a
-// dedicated canvas/GL context, entirely separate from the Emscripten canvas
-// main.ts/engine.ts drive, so there is zero risk of regressing M3.
+// WebXR session lifecycle, head pose, and controller enumeration, on a
+// dedicated canvas/GL context entirely separate from the Emscripten canvas
+// main.ts/engine.ts drive -- there is zero risk of a WebXR bug corrupting
+// M3's desktop rendering.
+//
+// M5: onPose is called every XR frame (not just the throttled debug-log
+// samples) with the raw head transform; main.ts forwards it into the engine
+// via engine.ts's setWebXRHeadPose. This module deliberately stays ignorant
+// of DoomModule/ccall -- main.ts is the only place that knows both sides
+// exist, so this file works identically whether or not a WAD/engine has
+// been loaded yet.
 
 export type XRLogFn = (message: string) => void;
+export type XRPoseFn = (
+  orientation: { x: number; y: number; z: number; w: number },
+  position: { x: number; y: number; z: number },
+) => void;
 
 let session: XRSession | null = null;
 let refSpace: XRReferenceSpace | null = null;
@@ -26,7 +37,11 @@ export function isInXRSession(): boolean {
   return session !== null;
 }
 
-export async function enterVR(log: XRLogFn, onSessionEnd: () => void): Promise<void> {
+export async function enterVR(
+  log: XRLogFn,
+  onSessionEnd: () => void,
+  onPose: XRPoseFn,
+): Promise<void> {
   if (!navigator.xr) {
     throw new Error("navigator.xr is not available in this browser.");
   }
@@ -63,30 +78,41 @@ export async function enterVR(log: XRLogFn, onSessionEnd: () => void): Promise<v
   }
 
   frameCount = 0;
-  session.requestAnimationFrame(onXRFrame(log));
+  session.requestAnimationFrame(onXRFrame(log, onPose));
 }
 
 export function exitVR(): void {
   void session?.end();
 }
 
-function onXRFrame(log: XRLogFn): XRFrameRequestCallback {
+function onXRFrame(log: XRLogFn, onPose: XRPoseFn): XRFrameRequestCallback {
   const frame: XRFrameRequestCallback = (_time, xrFrame) => {
     if (!session || !refSpace) return;
     session.requestAnimationFrame(frame);
     frameCount++;
-    if (frameCount % LOG_EVERY_N_FRAMES !== 1) return;
 
     const pose = xrFrame.getViewerPose(refSpace);
+    const shouldLog = frameCount % LOG_EVERY_N_FRAMES === 1;
+
     if (pose) {
       const { position: p, orientation: o } = pose.transform;
-      log(
-        `Head pose: pos(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}) ` +
-          `orient(${o.x.toFixed(2)}, ${o.y.toFixed(2)}, ${o.z.toFixed(2)}, ${o.w.toFixed(2)})`,
+      // Every frame, not throttled -- the engine needs continuous tracking;
+      // only the debug log below is rate-limited.
+      onPose(
+        { x: o.x, y: o.y, z: o.z, w: o.w },
+        { x: p.x, y: p.y, z: p.z },
       );
-    } else {
+      if (shouldLog) {
+        log(
+          `Head pose: pos(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}) ` +
+            `orient(${o.x.toFixed(2)}, ${o.y.toFixed(2)}, ${o.z.toFixed(2)}, ${o.w.toFixed(2)})`,
+        );
+      }
+    } else if (shouldLog) {
       log("Head pose: not yet tracked.");
     }
+
+    if (!shouldLog) return;
 
     const sources = Array.from(xrFrame.session.inputSources);
     if (sources.length === 0) {

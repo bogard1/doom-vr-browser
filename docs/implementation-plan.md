@@ -720,6 +720,77 @@ JS→WASM bridge calls).
 - Yaw, pitch, and roll all verified working (added incrementally, each
   tested before the next).
 
+**Status: implemented 2026-08-08, verified as far as no-headset/no-emulator
+desktop Chrome allows -- real-hardware verification is the user's next step,
+not done here.**
+
+New `engine/platform/web/vr_webxr.h`/`.cpp`: a `WebXRDeviceMode : Stereo3DMode`
+(mono-only for now, mirroring `MonoView`'s single `EyePose` -- stereo per-eye
+rendering is M6) whose `SetUp()` is where the actual work happens. Confirmed
+by reading `gl_scene.cpp`'s `RenderViewpoint()` that `R_SetupFrame()` (which
+derives `r_viewpoint.Angles` from the player actor's real body angle) always
+runs *before* `Stereo3DMode::SetUp()`, so `WebXRDeviceMode::SetUp()` can add
+the head-orientation offset straight onto `r_viewpoint.Angles` after the fact
+without ever touching the player actor -- body/head separation falls out of
+that ordering for free, rather than needing `doomYaw`/`hmdorientation`-style
+bookkeeping to keep them in sync.
+
+`Stereo3DMode::getCurrentMode()` (`gl_stereo_cvars.cpp`) gained an
+`__EMSCRIPTEN__` branch that switches to `WebXRDeviceMode` while
+`WebXR_IsActive()` is true and back to `MonoView` otherwise, so exiting VR
+falls straight back to M3's untouched desktop rendering.
+
+Two new `extern "C"` entry points, exported via `-sEXPORTED_FUNCTIONS` and
+called from JS through `-sEXPORTED_RUNTIME_METHODS=...,ccall`
+(`scripts/build-wasm.sh`):
+- `VR_WebXR_SetActive(int)` -- session open/close.
+- `VR_WebXR_SetHeadPose(qx,qy,qz,qw, px,py,pz)` -- one call per XR frame with
+  the raw `XRRigidTransform` (`web/src/xr.ts`'s `onPose` callback, wired
+  through `web/src/engine.ts`'s `setWebXRActive`/`setWebXRHeadPose` from
+  `main.ts`, which is the only file that knows both the WebXR session and the
+  DoomModule exist -- `xr.ts` itself stays unaware of `ccall`/`DoomModule`,
+  same separation-of-concerns M4 established).
+
+Quaternion → yaw/pitch/roll uses the standard YXZ Tait-Bryan extraction
+(gimbal-free for the ranges a human neck produces -- the same reason
+three.js's `PointerLockControls` picks that Euler order for camera look),
+derived analytically rather than copied from QuestZDoom's
+`QuatToYawPitchRoll` (that helper lives in `QzDoom_OpenXR.cpp`/`TBXR_Common.cpp`,
+outside this submodule and not available in this tree -- see architecture
+doc §4). Sign conventions were worked out by reading `src/d_main.cpp`'s
+mouse-look handling (`D_PostEvent`): a positive mouse-X turn *decreases*
+`Angles.Yaw`, and a positive mouse-Y look *increases* pitch (down); yaw and
+roll from the quaternion extraction come out CCW-positive in WebXR's
+right-handed space and need negating to match, pitch already matches
+directly. **Roll's sign is the least certain of the three** -- Doom has no
+native roll input to cross-check against, so if it looks inverted on real
+hardware, flip the sign in `vr_webxr.cpp`'s `rollDeg` line; this is exactly
+the kind of per-axis check the milestone's staged yaw→pitch→roll plan
+anticipated needing real hardware for.
+
+Yaw is recentered on session start (and via a new `vr_recenter` CCMD): the
+first head-pose sample after `VR_WebXR_SetActive(1)` is captured as the "look
+straight ahead" baseline, so whichever way the player physically faced when
+putting on the headset lines up with the body's existing keyboard/mouse
+facing direction. Pitch/roll are used as-is, not recentered, since "which way
+is down" is gravity-defined, not arbitrary. A basic vertical (stand/crouch)
+head-height offset is also applied to `r_viewpoint.Pos.Z`, gated by a new
+`vr_webxr_use_position` CVar; horizontal room-scale translation is
+deliberately deferred (needs collision-aware handling the map's actual walls
+don't know about) -- not required by this milestone's acceptance criteria.
+
+Verified: engine builds clean under Emscripten with the new files/CMake
+wiring and the new exported symbols show up in the built `lzdoom.js`; full
+M3 regression re-run in real desktop Chrome (drop `DOOM2.WAD`, title →
+skill select → MAP01 → move with `w`) shows no behavior change and no new
+console errors, confirming the `WebXR_IsActive() == false` default path is
+identical to the old hardcoded `MonoView` selection. **Not verified**: any
+actual VR rendering/tracking, since no Quest hardware or WebXR emulator
+extension is available in this environment -- the yaw/pitch/roll sign
+analysis above is analytical, not empirically confirmed. That verification,
+plus M4's still-outstanding positive-session-path check, is the user's next
+step on real hardware.
+
 ---
 
 ## M6 — Stereo renderer

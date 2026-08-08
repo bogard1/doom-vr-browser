@@ -1,8 +1,8 @@
-diff --git c/platform/emscripten-stub/QzDoom/VrCommon.h i/platform/emscripten-stub/QzDoom/VrCommon.h
+diff --git i/platform/emscripten-stub/QzDoom/VrCommon.h w/platform/emscripten-stub/QzDoom/VrCommon.h
 new file mode 100644
 index 0000000000..ff1b9170d2
 --- /dev/null
-+++ i/platform/emscripten-stub/QzDoom/VrCommon.h
++++ w/platform/emscripten-stub/QzDoom/VrCommon.h
 @@ -0,0 +1,75 @@
 +// Stand-in for QuestZDoom's Projects/Android/jni/QzDoom/VrCommon.h.
 +//
@@ -79,11 +79,11 @@ index 0000000000..ff1b9170d2
 +void jni_shutdown();
 +
 +#endif //vrcommon_h
-diff --git c/platform/emscripten-stub/QzDoom/VrInput.h i/platform/emscripten-stub/QzDoom/VrInput.h
+diff --git i/platform/emscripten-stub/QzDoom/VrInput.h w/platform/emscripten-stub/QzDoom/VrInput.h
 new file mode 100644
 index 0000000000..b702488784
 --- /dev/null
-+++ i/platform/emscripten-stub/QzDoom/VrInput.h
++++ w/platform/emscripten-stub/QzDoom/VrInput.h
 @@ -0,0 +1,13 @@
 +// Stand-in for QuestZDoom's Projects/Android/jni/QzDoom/VrInput.h -- see the
 +// comment in the sibling VrCommon.h stub for why this exists. g_game.cpp is
@@ -98,11 +98,11 @@ index 0000000000..b702488784
 +#include "VrCommon.h"
 +
 +#endif //vrinput_h
-diff --git c/platform/emscripten-stub/vr_stub.cpp i/platform/emscripten-stub/vr_stub.cpp
+diff --git i/platform/emscripten-stub/vr_stub.cpp w/platform/emscripten-stub/vr_stub.cpp
 new file mode 100644
 index 0000000000..5cdbe4efad
 --- /dev/null
-+++ i/platform/emscripten-stub/vr_stub.cpp
++++ w/platform/emscripten-stub/vr_stub.cpp
 @@ -0,0 +1,71 @@
 +// Definitions for the globals declared in QzDoom/VrCommon.h (see that
 +// file's header comment). VR is not wired up yet for the Emscripten build
@@ -175,11 +175,229 @@ index 0000000000..5cdbe4efad
 +	*pitch = 0;
 +	*roll = 0;
 +}
-diff --git c/src/CMakeLists.txt i/src/CMakeLists.txt
-index 7a25c4d807..a23d53ffa5 100644
---- c/src/CMakeLists.txt
-+++ i/src/CMakeLists.txt
-@@ -181,7 +181,21 @@ else()
+diff --git i/platform/web/vr_webxr.cpp w/platform/web/vr_webxr.cpp
+new file mode 100644
+index 0000000000..0856a93676
+--- /dev/null
++++ w/platform/web/vr_webxr.cpp
+@@ -0,0 +1,163 @@
++// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
++// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
++// converts the raw pose into engine camera angles.
++//
++// Body/head separation (docs/questzdoom-architecture.md §5, mirroring
++// QuestZDoom's doomYaw/hmdorientation split): the values computed here are
++// applied only to r_viewpoint.Angles/Pos, which R_SetupFrame() has already
++// derived from the player actor's real body Angles by the time
++// Stereo3DMode::SetUp() runs (see gl_scene.cpp's RenderViewpoint -- SetUp()
++// is called after R_SetupFrame, not before). Nothing here ever touches the
++// player actor itself, so turning your head changes the rendered view
++// direction without changing movement direction by construction, rather
++// than needing extra bookkeeping to keep the two in sync.
++#include "vr_webxr.h"
++
++#include <cmath>
++
++#include "r_utility.h"
++#include "c_cvars.h"
++#include "c_dispatch.h"
++
++CVAR(Bool, vr_webxr_use_position, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
++EXTERN_CVAR(Float, vr_vunits_per_meter)
++
++namespace {
++
++bool g_active = false;
++bool g_haveYawZero = false;
++double g_yawZeroDeg = 0.0;
++
++double g_yawDeg = 0.0;
++double g_pitchDeg = 0.0;
++double g_rollDeg = 0.0;
++double g_heightMeters = 0.0;
++
++} // namespace
++
++bool WebXR_IsActive()
++{
++	return g_active;
++}
++
++extern "C" {
++
++void VR_WebXR_SetActive(int active)
++{
++	g_active = active != 0;
++	g_haveYawZero = false;
++	if (!g_active)
++	{
++		g_yawDeg = g_pitchDeg = g_rollDeg = g_heightMeters = 0.0;
++	}
++}
++
++// qx/qy/qz/qw: WebXR head orientation (XRRigidTransform.orientation) -- a
++// right-handed, Y-up, -Z-forward quaternion relative to the session's
++// 'local-floor' (or 'local') reference space, as sampled by
++// XRFrame.getViewerPose() in web/src/xr.ts.
++// px/py/pz: the same transform's position, in meters, same reference space.
++void VR_WebXR_SetHeadPose(float qx, float qy, float qz, float qw,
++                           float px, float py, float pz)
++{
++	// YXZ Tait-Bryan extraction (yaw about Y, then pitch about X, then roll
++	// about Z) -- the standard decomposition for FPS/HMD-style cameras in a
++	// Y-up right-handed space, chosen because it stays gimbal-free across
++	// the yaw/pitch ranges a human neck actually produces (the same reason
++	// e.g. three.js's PointerLockControls uses 'YXZ' Euler order for camera
++	// look). Formulas derived from the standard quaternion-to-rotation-matrix
++	// expansion, not copied from a reference implementation.
++	const double x = qx, y = qy, z = qz, w = qw;
++
++	const double m20 = 2.0 * (x * z - w * y);
++	const double m22 = 1.0 - 2.0 * (x * x + y * y);
++	const double yawRaw = std::atan2(m20, m22);
++
++	double sinPitch = 2.0 * (y * z + w * x);
++	if (sinPitch > 1.0) sinPitch = 1.0;
++	if (sinPitch < -1.0) sinPitch = -1.0;
++	const double pitchRaw = std::asin(-sinPitch);
++
++	const double m01 = 2.0 * (x * y - w * z);
++	const double m11 = 1.0 - 2.0 * (x * x + z * z);
++	const double rollRaw = std::atan2(m01, m11);
++
++	const double RAD2DEGD = 180.0 / M_PI;
++
++	// Sign check against src/d_main.cpp's mouse-look handling: a positive
++	// mouse-X (turning the view right) sends a positive turn that
++	// *decreases* Angles.Yaw, and a positive mouse-Y (looking down) sends a
++	// positive look that *increases* LocalViewPitch. Working through the
++	// same rotation-direction analysis for this quaternion extraction: yaw
++	// and roll come out CCW-positive in WebXR's space but need negating to
++	// match Angles' convention; pitch already comes out positive-is-down,
++	// matching Angles directly, so it is not negated. Roll is the least
++	// certain of the three -- Doom has no native roll input to cross-check
++	// against, so if it looks inverted on real hardware, flip the sign here.
++	double yawDeg = -(yawRaw * RAD2DEGD);
++	const double pitchDeg = pitchRaw * RAD2DEGD;
++	const double rollDeg = -(rollRaw * RAD2DEGD);
++
++	if (!g_haveYawZero)
++	{
++		// Recenter: whichever way the player was physically facing when
++		// tracking started becomes "look straight ahead" relative to the
++		// body's existing (keyboard/mouse-controlled) facing direction.
++		// Only yaw is recentered like this -- pitch/roll are used as-is,
++		// since "which way is down" is defined by gravity, not by where the
++		// player happened to be facing.
++		g_yawZeroDeg = yawDeg;
++		g_haveYawZero = true;
++	}
++	yawDeg -= g_yawZeroDeg;
++
++	g_yawDeg = yawDeg;
++	g_pitchDeg = pitchDeg;
++	g_rollDeg = rollDeg;
++	// Only vertical (stand/crouch) head displacement is applied for M5;
++	// horizontal room-scale translation needs collision-aware handling
++	// (physically walking into a wall vs. the map's walls) that's follow-up
++	// work, not required by M5's acceptance criteria.
++	g_heightMeters = py;
++}
++
++void VR_WebXR_Recenter()
++{
++	g_haveYawZero = false;
++}
++
++} // extern "C"
++
++CCMD(vr_recenter)
++{
++	VR_WebXR_Recenter();
++}
++
++namespace s3d {
++
++WebXRDeviceMode::WebXRDeviceMode()
++{
++	eye_ptrs.Push(&centralEye);
++}
++
++const Stereo3DMode& WebXRDeviceMode::getInstance()
++{
++	static WebXRDeviceMode instance;
++	return instance;
++}
++
++void WebXRDeviceMode::SetUp() const
++{
++	Stereo3DMode::SetUp();
++
++	r_viewpoint.Angles.Yaw = (r_viewpoint.Angles.Yaw + DAngle(g_yawDeg)).Normalized180();
++	r_viewpoint.Angles.Pitch = (r_viewpoint.Angles.Pitch + DAngle(g_pitchDeg)).Normalized180();
++	r_viewpoint.Angles.Roll = (r_viewpoint.Angles.Roll + DAngle(g_rollDeg)).Normalized180();
++
++	if (vr_webxr_use_position)
++	{
++		r_viewpoint.Pos.Z += g_heightMeters * vr_vunits_per_meter;
++	}
++}
++
++} // namespace s3d
+diff --git i/platform/web/vr_webxr.h w/platform/web/vr_webxr.h
+new file mode 100644
+index 0000000000..abcdba7379
+--- /dev/null
++++ w/platform/web/vr_webxr.h
+@@ -0,0 +1,43 @@
++// WebXR head-tracking bridge (M5 -- see docs/implementation-plan.md).
++// The browser side (web/src/xr.ts) samples the XR frame's head pose every
++// frame and forwards it here via the extern "C" functions declared in
++// vr_webxr.cpp; this header only exposes the render-mode seam so
++// gl_stereo_cvars.cpp can switch into WebXR mode without needing to know any
++// of the conversion details.
++#ifndef VR_WEBXR_H
++#define VR_WEBXR_H
++
++#include "gl/stereo3d/gl_stereo3d.h"
++
++// True once the browser has told the engine a WebXR session is active (see
++// VR_WebXR_SetActive in vr_webxr.cpp).
++bool WebXR_IsActive();
++
++namespace s3d {
++
++// M5 is head-tracking only: this renders mono, exactly like MonoView (one
++// EyePose, empty Present()), but its SetUp() feeds real HMD orientation into
++// r_viewpoint.Angles every frame. Stereo per-eye rendering
++// (WebXRDeviceEyePose : ShiftedEyePose, mirroring OpenXRDeviceEyePose) is
++// M6's job -- this class exists now so the pose data path and the
++// Stereo3DMode::getCurrentMode() dispatch seam are both proven out ahead of
++// that work, per the implementation plan's note that "mono rendering can
++// read head pose through the same seam".
++class WebXRDeviceMode : public Stereo3DMode
++{
++public:
++	static const Stereo3DMode& getInstance();
++
++	void SetUp() const override;
++	void Present() const override {}
++
++protected:
++	WebXRDeviceMode();
++
++private:
++	EyePose centralEye;
++};
++
++} // namespace s3d
++
++#endif // VR_WEBXR_H
+diff --git i/src/CMakeLists.txt w/src/CMakeLists.txt
+index 7a25c4d807..1dd5254fbf 100644
+--- i/src/CMakeLists.txt
++++ w/src/CMakeLists.txt
+@@ -181,7 +181,26 @@ else()
  	endif()
  
  	# Non-Windows version also needs SDL except native OS X backend
@@ -198,11 +416,16 @@ index 7a25c4d807..a23d53ffa5 100644
 +		# for it until the real WebXR bridge (M4+) exists.
 +		include_directories( ${CMAKE_CURRENT_SOURCE_DIR}/../platform/emscripten-stub )
 +		set( EMSCRIPTEN_STUB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../platform/emscripten-stub/vr_stub.cpp )
++
++		# M5 WebXR head-tracking bridge (real feature, not a stub) -- see
++		# platform/web/vr_webxr.h. Included elsewhere as "web/vr_webxr.h".
++		include_directories( ${CMAKE_CURRENT_SOURCE_DIR}/../platform )
++		set( EMSCRIPTEN_WEB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../platform/web/vr_webxr.cpp )
 +	elseif( NOT APPLE OR NOT OSX_COCOA_BACKEND )
  		find_package( SDL2 REQUIRED )
  		include_directories( "${SDL2_INCLUDE_DIR}" )
  		set( ZDOOM_LIBS ${ZDOOM_LIBS} "${SDL2_LIBRARY}" )
-@@ -195,7 +209,19 @@ else()
+@@ -195,7 +214,19 @@ else()
  endif()
  
  if( NOT NO_OPENAL )
@@ -223,18 +446,19 @@ index 7a25c4d807..a23d53ffa5 100644
  		find_package( OpenAL )
  		mark_as_advanced(CLEAR OPENAL_INCLUDE_DIR)
  		if( OPENAL_INCLUDE_DIR )
-@@ -1102,6 +1128,7 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
+@@ -1102,6 +1133,8 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
  	${NOT_COMPILED_SOURCE_FILES}
  	__autostart.cpp
  	${SYSTEM_SOURCES}
 +	${EMSCRIPTEN_STUB_SOURCES}
++	${EMSCRIPTEN_WEB_SOURCES}
  	${FASTMATH_SOURCES}
  	${PCH_SOURCES}
  	x86.cpp
-diff --git c/src/__autostart.cpp i/src/__autostart.cpp
+diff --git i/src/__autostart.cpp w/src/__autostart.cpp
 index 13e104d753..a8226c68c6 100644
---- c/src/__autostart.cpp
-+++ i/src/__autostart.cpp
+--- i/src/__autostart.cpp
++++ w/src/__autostart.cpp
 @@ -89,6 +89,21 @@ __declspec(allocate(".yreg$a")) void *const YRegHead = 0;
  
  #endif
@@ -257,10 +481,10 @@ index 13e104d753..a8226c68c6 100644
  #elif defined(__GNUC__)
  
  #include "doomtype.h"
-diff --git c/src/autosegs.h i/src/autosegs.h
+diff --git i/src/autosegs.h w/src/autosegs.h
 index 9cba04ad23..0c238879b7 100644
---- c/src/autosegs.h
-+++ i/src/autosegs.h
+--- i/src/autosegs.h
++++ w/src/autosegs.h
 @@ -49,6 +49,87 @@
  typedef void * const REGINFO;
  typedef void * NCREGINFO;
@@ -355,10 +579,10 @@ index 9cba04ad23..0c238879b7 100644
  #endif
 +
 +#endif
-diff --git c/src/cmdlib.cpp i/src/cmdlib.cpp
+diff --git i/src/cmdlib.cpp w/src/cmdlib.cpp
 index 3d66dfad84..4ce3bb5514 100644
---- c/src/cmdlib.cpp
-+++ i/src/cmdlib.cpp
+--- i/src/cmdlib.cpp
++++ w/src/cmdlib.cpp
 @@ -29,7 +29,7 @@
  #include <unistd.h>
  #include <sys/types.h>
@@ -368,10 +592,10 @@ index 3d66dfad84..4ce3bb5514 100644
  #include <fts.h>
  #endif
  #endif
-diff --git c/src/d_main.cpp i/src/d_main.cpp
+diff --git i/src/d_main.cpp w/src/d_main.cpp
 index df3bcda9df..d024120233 100644
---- c/src/d_main.cpp
-+++ i/src/d_main.cpp
+--- i/src/d_main.cpp
++++ w/src/d_main.cpp
 @@ -45,6 +45,10 @@
  #include <math.h>
  #include <assert.h>
@@ -586,10 +810,10 @@ index df3bcda9df..d024120233 100644
  
  //==========================================================================
  //
-diff --git c/src/d_net.cpp i/src/d_net.cpp
+diff --git i/src/d_net.cpp w/src/d_net.cpp
 index 544822f6d3..781a6f176a 100644
---- c/src/d_net.cpp
-+++ i/src/d_net.cpp
+--- i/src/d_net.cpp
++++ w/src/d_net.cpp
 @@ -990,7 +990,7 @@ void NetUpdate (void)
  	// build new ticcmds for console player
  	for (i = 0; i < newtics; i++)
@@ -599,10 +823,10 @@ index 544822f6d3..781a6f176a 100644
  		D_ProcessEvents ();
  		if (pauseext || (maketic - gametic) / ticdup >= BACKUPTICS/2-1)
  			break;			// can't hold any more
-diff --git c/src/dobject.h i/src/dobject.h
+diff --git i/src/dobject.h w/src/dobject.h
 index b57f75bedf..9a0bff7b03 100644
---- c/src/dobject.h
-+++ i/src/dobject.h
+--- i/src/dobject.h
++++ w/src/dobject.h
 @@ -39,6 +39,7 @@
  #include "doomtype.h"
  #include "i_system.h"
@@ -622,10 +846,10 @@ index b57f75bedf..9a0bff7b03 100644
  #else
  #	define _DECLARE_TI(cls) ClassReg * const cls::RegistrationInfoPtr __attribute__((section(SECTION_CREG))) = &cls::RegistrationInfo;
  #endif
-diff --git c/src/g_level.h i/src/g_level.h
+diff --git i/src/g_level.h w/src/g_level.h
 index 48ba798f9e..8c30d73e4d 100644
---- c/src/g_level.h
-+++ i/src/g_level.h
+--- i/src/g_level.h
++++ w/src/g_level.h
 @@ -37,6 +37,7 @@
  #include "doomtype.h"
  #include "sc_man.h"
@@ -634,11 +858,22 @@ index 48ba798f9e..8c30d73e4d 100644
  
  struct level_info_t;
  struct cluster_info_t;
-diff --git c/src/gl/stereo3d/gl_stereo_cvars.cpp i/src/gl/stereo3d/gl_stereo_cvars.cpp
-index 1b0277a845..b7553b1dfd 100644
---- c/src/gl/stereo3d/gl_stereo_cvars.cpp
-+++ i/src/gl/stereo3d/gl_stereo_cvars.cpp
-@@ -108,9 +108,20 @@ void Stereo3DMode::setCurrentMode(const Stereo3DMode& mode) {
+diff --git i/src/gl/stereo3d/gl_stereo_cvars.cpp w/src/gl/stereo3d/gl_stereo_cvars.cpp
+index 1b0277a845..1c0c5a4501 100644
+--- i/src/gl/stereo3d/gl_stereo_cvars.cpp
++++ w/src/gl/stereo3d/gl_stereo_cvars.cpp
+@@ -36,6 +36,10 @@
+ #include "menu/menu.h"
+ #include "version.h"
+ 
++#ifdef __EMSCRIPTEN__
++#include "web/vr_webxr.h"
++#endif
++
+ // Set up 3D-specific console variables:
+ CVAR(Int, vr_mode, 15, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
+ 
+@@ -108,9 +112,28 @@ void Stereo3DMode::setCurrentMode(const Stereo3DMode& mode) {
  }
  
  /* static */
@@ -650,20 +885,28 @@ index 1b0277a845..b7553b1dfd 100644
 +	// Unconditionally selecting it here (as upstream does, since it only
 +	// ever ships for Android) leaves every other target with no VR mode to
 +	// fall back to; MonoView is the normal non-VR desktop/web rendering
-+	// path (see getMonoMode() below) and is what WebXR M4+ will eventually
-+	// replace with its own Stereo3DMode.
++	// path (see getMonoMode() below).
 +#ifdef __ANDROID__
  	setCurrentMode(OpenXRDeviceMode::getInstance());
++#elif defined(__EMSCRIPTEN__)
++	// M5: switch into WebXRDeviceMode for as long as the browser reports an
++	// active XR session (web/src/xr.ts calls VR_WebXR_SetActive on session
++	// start/end); falls back to ordinary desktop MonoView otherwise, so M3's
++	// non-VR gameplay is unaffected when no session is open.
++	if (WebXR_IsActive())
++		setCurrentMode(WebXRDeviceMode::getInstance());
++	else
++		setCurrentMode(MonoView::getInstance());
 +#else
 +	setCurrentMode(MonoView::getInstance());
 +#endif
  	return *currentStereo3DMode;
  }
  
-diff --git c/src/gl/system/gl_framebuffer.h i/src/gl/system/gl_framebuffer.h
+diff --git i/src/gl/system/gl_framebuffer.h w/src/gl/system/gl_framebuffer.h
 index 242dd593e3..2c5fc9c054 100644
---- c/src/gl/system/gl_framebuffer.h
-+++ i/src/gl/system/gl_framebuffer.h
+--- i/src/gl/system/gl_framebuffer.h
++++ w/src/gl/system/gl_framebuffer.h
 @@ -4,7 +4,13 @@
  #ifdef _WIN32
  #include "win32gliface.h"
@@ -703,10 +946,10 @@ index 242dd593e3..2c5fc9c054 100644
  
  	bool HWGammaActive = false;			// Are we using hardware or software gamma?
  	std::shared_ptr<FGLDebug> mDebug;	// Debug API
-diff --git c/src/gl/system/gl_load.c i/src/gl/system/gl_load.c
+diff --git i/src/gl/system/gl_load.c w/src/gl/system/gl_load.c
 index cbdef1f56f..daec8af554 100644
---- c/src/gl/system/gl_load.c
-+++ i/src/gl/system/gl_load.c
+--- i/src/gl/system/gl_load.c
++++ w/src/gl/system/gl_load.c
 @@ -108,7 +108,32 @@ static void *MOBILE_GetProcAddress(const char* name)
  
  #endif
@@ -740,10 +983,10 @@ index cbdef1f56f..daec8af554 100644
  
  int ogl_ext_ARB_buffer_storage = ogl_LOAD_FAILED;
  int ogl_ext_ARB_shader_storage_buffer_object = ogl_LOAD_FAILED;
-diff --git c/src/gl/system/gl_swframebuffer.cpp i/src/gl/system/gl_swframebuffer.cpp
+diff --git i/src/gl/system/gl_swframebuffer.cpp w/src/gl/system/gl_swframebuffer.cpp
 index 94db83f032..f8cbd5fa29 100644
---- c/src/gl/system/gl_swframebuffer.cpp
-+++ i/src/gl/system/gl_swframebuffer.cpp
+--- i/src/gl/system/gl_swframebuffer.cpp
++++ w/src/gl/system/gl_swframebuffer.cpp
 @@ -1609,7 +1609,10 @@ void OpenGLSWFrameBuffer::UpdatePalette()
  
  bool OpenGLSWFrameBuffer::SetGamma(float gamma)
@@ -756,10 +999,10 @@ index 94db83f032..f8cbd5fa29 100644
  	NeedGammaUpdate = true;
  	return true;
  }
-diff --git c/src/gl/system/gl_swframebuffer.h i/src/gl/system/gl_swframebuffer.h
+diff --git i/src/gl/system/gl_swframebuffer.h w/src/gl/system/gl_swframebuffer.h
 index 007688ea0d..e92ee4d303 100644
---- c/src/gl/system/gl_swframebuffer.h
-+++ i/src/gl/system/gl_swframebuffer.h
+--- i/src/gl/system/gl_swframebuffer.h
++++ w/src/gl/system/gl_swframebuffer.h
 @@ -18,10 +18,13 @@ class OpenGLSWFrameBuffer : public Win32GLFrameBuffer
  {
  	typedef Win32GLFrameBuffer Super;
@@ -777,10 +1020,10 @@ index 007688ea0d..e92ee4d303 100644
  #endif
  
  
-diff --git c/src/gl/system/gl_system.h i/src/gl/system/gl_system.h
+diff --git i/src/gl/system/gl_system.h w/src/gl/system/gl_system.h
 index a5e3dab2f1..2aa55ade5b 100644
---- c/src/gl/system/gl_system.h
-+++ i/src/gl/system/gl_system.h
+--- i/src/gl/system/gl_system.h
++++ w/src/gl/system/gl_system.h
 @@ -41,6 +41,13 @@
  
  #ifdef __MOBILE__
@@ -795,10 +1038,10 @@ index a5e3dab2f1..2aa55ade5b 100644
  #endif
  
  #ifdef _MSC_VER
-diff --git c/src/menu/menudef.cpp i/src/menu/menudef.cpp
+diff --git i/src/menu/menudef.cpp w/src/menu/menudef.cpp
 index 9b20e5ac37..17d4add692 100644
---- c/src/menu/menudef.cpp
-+++ i/src/menu/menudef.cpp
+--- i/src/menu/menudef.cpp
++++ w/src/menu/menudef.cpp
 @@ -1629,8 +1629,10 @@ void M_CreateMenus()
  	{
  		I_BuildMIDIMenuList(*opt);
@@ -819,10 +1062,10 @@ index 9b20e5ac37..17d4add692 100644
  	opt = OptionValues.CheckKey(NAME_PlayerTeam);
  	if (opt != nullptr)
  	{
-diff --git c/src/posix/i_system.h i/src/posix/i_system.h
+diff --git i/src/posix/i_system.h w/src/posix/i_system.h
 index 32693f0edb..dc7c33cb45 100644
---- c/src/posix/i_system.h
-+++ i/src/posix/i_system.h
+--- i/src/posix/i_system.h
++++ w/src/posix/i_system.h
 @@ -142,6 +142,10 @@ inline const char *I_FindName(findstate_t *fileinfo)
  #define FA_DIREC	8
  #define FA_ARCH		16
@@ -841,10 +1084,10 @@ index 32693f0edb..dc7c33cb45 100644
 +#endif
  
  #endif
-diff --git c/src/posix/sdl/hardware.cpp i/src/posix/sdl/hardware.cpp
+diff --git i/src/posix/sdl/hardware.cpp w/src/posix/sdl/hardware.cpp
 index 753434fec1..c93b0fada3 100644
---- c/src/posix/sdl/hardware.cpp
-+++ i/src/posix/sdl/hardware.cpp
+--- i/src/posix/sdl/hardware.cpp
++++ w/src/posix/sdl/hardware.cpp
 @@ -246,7 +246,7 @@ void I_ClosestResolution (int *width, int *height, int bits)
  EXTERN_CVAR(Int, vid_maxfps);
  EXTERN_CVAR(Bool, cl_capfps);
@@ -854,10 +1097,10 @@ index 753434fec1..c93b0fada3 100644
  Semaphore FPSLimitSemaphore;
  
  static void FPSLimitNotify(sigval val)
-diff --git c/src/posix/sdl/i_input.cpp i/src/posix/sdl/i_input.cpp
+diff --git i/src/posix/sdl/i_input.cpp w/src/posix/sdl/i_input.cpp
 index bdf15e18ae..2ecedab51c 100644
---- c/src/posix/sdl/i_input.cpp
-+++ i/src/posix/sdl/i_input.cpp
+--- i/src/posix/sdl/i_input.cpp
++++ w/src/posix/sdl/i_input.cpp
 @@ -563,7 +563,7 @@ void MessagePump (const SDL_Event &sev)
  void I_GetEvent ()
  {
@@ -867,10 +1110,10 @@ index bdf15e18ae..2ecedab51c 100644
  	while (SDL_PollEvent (&sev))
  	{
  		MessagePump (sev);
-diff --git c/src/posix/sdl/i_main.cpp i/src/posix/sdl/i_main.cpp
+diff --git i/src/posix/sdl/i_main.cpp w/src/posix/sdl/i_main.cpp
 index 00fa15497b..a31c034a6f 100644
---- c/src/posix/sdl/i_main.cpp
-+++ i/src/posix/sdl/i_main.cpp
+--- i/src/posix/sdl/i_main.cpp
++++ w/src/posix/sdl/i_main.cpp
 @@ -170,6 +170,10 @@ int main_android (int argc, char **argv)
  int main (int argc, char **argv)
  {
@@ -882,10 +1125,10 @@ index 00fa15497b..a31c034a6f 100644
  #if !defined (__APPLE__) && !defined (__ANDROID__)
  	{
  		int s[4] = { SIGSEGV, SIGILL, SIGFPE, SIGBUS };
-diff --git c/src/posix/sdl/i_system.cpp i/src/posix/sdl/i_system.cpp
+diff --git i/src/posix/sdl/i_system.cpp w/src/posix/sdl/i_system.cpp
 index 27a32076d4..352fcc129e 100644
---- c/src/posix/sdl/i_system.cpp
-+++ i/src/posix/sdl/i_system.cpp
+--- i/src/posix/sdl/i_system.cpp
++++ w/src/posix/sdl/i_system.cpp
 @@ -110,6 +110,11 @@ void I_ShowFatalError(const char *message)
  	Mac_I_FatalError(message);
  #elif defined __linux__
@@ -898,10 +1141,10 @@ index 27a32076d4..352fcc129e 100644
  #else
  	// ???
  #endif
-diff --git c/src/posix/sdl/sdlglvideo.cpp i/src/posix/sdl/sdlglvideo.cpp
+diff --git i/src/posix/sdl/sdlglvideo.cpp w/src/posix/sdl/sdlglvideo.cpp
 index 50f9f10edf..581dfed456 100644
---- c/src/posix/sdl/sdlglvideo.cpp
-+++ i/src/posix/sdl/sdlglvideo.cpp
+--- i/src/posix/sdl/sdlglvideo.cpp
++++ w/src/posix/sdl/sdlglvideo.cpp
 @@ -531,7 +531,7 @@ void SDLGLFB::NewRefreshRate ()
  
  void SDLGLFB::SwapBuffers()
@@ -911,11 +1154,11 @@ index 50f9f10edf..581dfed456 100644
  	if (vid_maxfps && !cl_capfps)
  	{
  		SEMAPHORE_WAIT(FPSLimitSemaphore)
-diff --git c/src/posix/sdl/sdlglvideo.h i/src/posix/sdl/sdlglvideo.h
+diff --git i/src/posix/sdl/sdlglvideo.h w/src/posix/sdl/sdlglvideo.h
 new file mode 100644
 index 0000000000..798131e285
 --- /dev/null
-+++ i/src/posix/sdl/sdlglvideo.h
++++ w/src/posix/sdl/sdlglvideo.h
 @@ -0,0 +1,150 @@
 +#ifndef __SDLGLVIDEO_H__
 +#define __SDLGLVIDEO_H__
@@ -1067,10 +1310,10 @@ index 0000000000..798131e285
 +};
 +
 +#endif
-diff --git c/src/posix/sdl/sdlvideo.cpp i/src/posix/sdl/sdlvideo.cpp
+diff --git i/src/posix/sdl/sdlvideo.cpp w/src/posix/sdl/sdlvideo.cpp
 index 5eb8a7bf36..eed8bc40c6 100644
---- c/src/posix/sdl/sdlvideo.cpp
-+++ i/src/posix/sdl/sdlvideo.cpp
+--- i/src/posix/sdl/sdlvideo.cpp
++++ w/src/posix/sdl/sdlvideo.cpp
 @@ -231,7 +231,7 @@ void SDLFB::Update ()
  
  	DrawRateStuff ();
@@ -1095,19 +1338,19 @@ index 5eb8a7bf36..eed8bc40c6 100644
  	NeedGammaUpdate = true;
  	return true;
  }
-diff --git c/src/posix/sdl/sdlvideo.h i/src/posix/sdl/sdlvideo.h
+diff --git i/src/posix/sdl/sdlvideo.h w/src/posix/sdl/sdlvideo.h
 new file mode 100644
 index 0000000000..2129f5a622
 --- /dev/null
-+++ i/src/posix/sdl/sdlvideo.h
++++ w/src/posix/sdl/sdlvideo.h
 @@ -0,0 +1,3 @@
 +#include "hardware.h"
 +#include "v_video.h"
 +#include "sdlglvideo.h"
-diff --git c/src/scripting/thingdef.h i/src/scripting/thingdef.h
+diff --git i/src/scripting/thingdef.h w/src/scripting/thingdef.h
 index 63b65b2bb1..dcf29cbdf8 100644
---- c/src/scripting/thingdef.h
-+++ i/src/scripting/thingdef.h
+--- i/src/scripting/thingdef.h
++++ w/src/scripting/thingdef.h
 @@ -43,6 +43,7 @@
  #define __THINGDEF_H
  
@@ -1159,10 +1402,10 @@ index 63b65b2bb1..dcf29cbdf8 100644
  	static void Handler_##name##_##paramlist##_##clas(AActor *defaults, PClassActor *info, Baggage &bag, FPropParam *params)
  
  
-diff --git c/src/scripting/vm/vm.h i/src/scripting/vm/vm.h
+diff --git i/src/scripting/vm/vm.h w/src/scripting/vm/vm.h
 index db55dce43c..4ac2252d1e 100644
---- c/src/scripting/vm/vm.h
-+++ i/src/scripting/vm/vm.h
+--- i/src/scripting/vm/vm.h
++++ w/src/scripting/vm/vm.h
 @@ -624,11 +624,24 @@ struct AFuncDesc
  #define MSVC_FSEG __declspec(allocate(".freg$u"))
  #define GCC_ASEG
@@ -1278,10 +1521,10 @@ index db55dce43c..4ac2252d1e 100644
  
  
  class AActor;
-diff --git c/src/sound/backend/oalsound.cpp i/src/sound/backend/oalsound.cpp
+diff --git i/src/sound/backend/oalsound.cpp w/src/sound/backend/oalsound.cpp
 index a2bd511ac2..e2767eb12a 100644
---- c/src/sound/backend/oalsound.cpp
-+++ i/src/sound/backend/oalsound.cpp
+--- i/src/sound/backend/oalsound.cpp
++++ w/src/sound/backend/oalsound.cpp
 @@ -680,11 +680,19 @@ OpenALSoundRenderer::OpenALSoundRenderer()
  	// meaningful values for ALC_MONO_SOURCES and ALC_MONO_SOURCES.
  	// At least Apple's OpenAL implementation returns zeroes,
@@ -1335,10 +1578,10 @@ index a2bd511ac2..e2767eb12a 100644
  	OpenALSoundStream *stream = new OpenALSoundStream(this);
  	if (!stream->Init(callback, buffbytes, flags, samplerate, userdata))
  	{
-diff --git c/src/swrenderer/drawers/r_thread.cpp i/src/swrenderer/drawers/r_thread.cpp
+diff --git i/src/swrenderer/drawers/r_thread.cpp w/src/swrenderer/drawers/r_thread.cpp
 index 5e8e2cfc1e..6edd0d7e68 100644
---- c/src/swrenderer/drawers/r_thread.cpp
-+++ i/src/swrenderer/drawers/r_thread.cpp
+--- i/src/swrenderer/drawers/r_thread.cpp
++++ w/src/swrenderer/drawers/r_thread.cpp
 @@ -39,7 +39,14 @@
  void PeekThreadedErrorPane();
  #endif
@@ -1354,10 +1597,10 @@ index 5e8e2cfc1e..6edd0d7e68 100644
  CVAR(Int, r_debug_draw, 0, 0);
  
  /////////////////////////////////////////////////////////////////////////////
-diff --git c/src/version.h i/src/version.h
+diff --git i/src/version.h w/src/version.h
 index 220ce7c3d7..6f92463e16 100644
---- c/src/version.h
-+++ i/src/version.h
+--- i/src/version.h
++++ w/src/version.h
 @@ -92,7 +92,12 @@ const char *GetVersionString();
  #define OPTIONALWAD "res/lz_game_support.pk3"
  #else
@@ -1372,10 +1615,10 @@ index 220ce7c3d7..6f92463e16 100644
  #endif
  
  
-diff --git c/src/zzautozend.cpp i/src/zzautozend.cpp
+diff --git i/src/zzautozend.cpp w/src/zzautozend.cpp
 index 18c020310c..502e3f1ee6 100644
---- c/src/zzautozend.cpp
-+++ i/src/zzautozend.cpp
+--- i/src/zzautozend.cpp
++++ w/src/zzautozend.cpp
 @@ -53,6 +53,16 @@ __declspec(allocate(".greg$z")) void *const GRegTail = 0;
  __declspec(allocate(".yreg$z")) void *const YRegTail = 0;
  
@@ -1393,10 +1636,10 @@ index 18c020310c..502e3f1ee6 100644
  #elif defined(__GNUC__)
  
  #include "doomtype.h"
-diff --git c/tools/lemon/CMakeLists.txt i/tools/lemon/CMakeLists.txt
+diff --git i/tools/lemon/CMakeLists.txt w/tools/lemon/CMakeLists.txt
 index 71418eda5a..e4ffa8b0c6 100644
---- c/tools/lemon/CMakeLists.txt
-+++ i/tools/lemon/CMakeLists.txt
+--- i/tools/lemon/CMakeLists.txt
++++ w/tools/lemon/CMakeLists.txt
 @@ -6,6 +6,14 @@ if( NOT CMAKE_CROSSCOMPILING )
  	add_executable( lemon lemon.c )
  	set( CROSS_EXPORTS ${CROSS_EXPORTS} lemon PARENT_SCOPE )
@@ -1412,10 +1655,10 @@ index 71418eda5a..e4ffa8b0c6 100644
  	# Lemon wants lempar.c in its directory
  	add_custom_command( TARGET lemon
  		POST_BUILD
-diff --git c/wadsrc/static/defbind1.txt i/wadsrc/static/defbind1.txt
+diff --git i/wadsrc/static/defbind1.txt w/wadsrc/static/defbind1.txt
 index 7e4fa29b7c..dbf45ee12b 100644
---- c/wadsrc/static/defbind1.txt
-+++ i/wadsrc/static/defbind1.txt
+--- i/wadsrc/static/defbind1.txt
++++ w/wadsrc/static/defbind1.txt
 @@ -1 +1,11 @@
  /* Default keybindings for all games */
 +

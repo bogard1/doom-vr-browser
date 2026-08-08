@@ -41,9 +41,14 @@ mkdir -p "${BUILD_DIR}"
 #   global-`Module`-variable script-tag pattern.
 # -sINVOKE_RUN=0: don't call main() the instant the module finishes loading
 #   -- engine.ts needs to mount the user's WAD into FS first.
-# -sEXPORTED_RUNTIME_METHODS=callMain,FS / -sFORCE_FILESYSTEM=1: expose the
-#   two things engine.ts calls directly (mounting the WAD, starting main()
-#   once it's mounted).
+# -sEXPORTED_RUNTIME_METHODS=callMain,FS,ccall / -sFORCE_FILESYSTEM=1: expose
+#   the things engine.ts/xr.ts call directly (mounting the WAD, starting
+#   main() once it's mounted, and -- from M5 -- pushing WebXR head-pose
+#   samples into the engine every XR frame via ccall).
+# -sEXPORTED_FUNCTIONS: _main plus the M5 WebXR bridge entry points
+#   (platform/web/vr_webxr.cpp) -- listing EXPORTED_FUNCTIONS at all
+#   overrides Emscripten's implicit "_main"-only default, so _main must be
+#   repeated here or callMain stops working.
 emcmake cmake \
 	-S "${ENGINE_DIR}" \
 	-B "${BUILD_DIR}" \
@@ -62,7 +67,7 @@ emcmake cmake \
 	-DIMPORT_EXECUTABLES="${IMPORT_EXECUTABLES}" \
 	-DNO_OPENMP=ON \
 	-DCMAKE_CXX_FLAGS="-fexceptions" \
-	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=16777216" \
+	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS,ccall -sEXPORTED_FUNCTIONS=_main,_VR_WebXR_SetActive,_VR_WebXR_SetHeadPose -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=16777216" \
 	"$@"
 
 cmake --build "${BUILD_DIR}"

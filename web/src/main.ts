@@ -1,6 +1,6 @@
 import "./style.css";
 import { readWadFile, type LoadedWad } from "./wad-loader";
-import { loadEngine, mountWad, startDoom } from "./engine";
+import { loadEngine, mountWad, startDoom, setWebXRActive, setWebXRHeadPose, type DoomModule } from "./engine";
 import { StatusLog } from "./debug";
 import { enterVR, exitVR, isImmersiveVRSupported, isInXRSession } from "./xr";
 
@@ -34,6 +34,12 @@ const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const status = new StatusLog(document.querySelector<HTMLDivElement>("#status")!);
 
 let currentWad: LoadedWad | null = null;
+// M5: the engine module and the WebXR session load/start independently
+// (Enter VR works before a WAD is even chosen, per M4) -- these two flags
+// track whichever pairing has actually happened so the head-pose bridge
+// activates exactly when both sides are ready, in either order.
+let currentModule: DoomModule | null = null;
+let xrActive = false;
 
 async function handleFile(file: File): Promise<void> {
   try {
@@ -73,6 +79,8 @@ startButton.addEventListener("click", async () => {
   try {
     canvas.hidden = false;
     const engine = await loadEngine(canvas, (msg) => status.log(msg));
+    currentModule = engine;
+    if (xrActive) setWebXRActive(engine, true);
     status.log("Mounting WAD…");
     const iwadPath = mountWad(engine, currentWad);
     status.log(`Starting engine with -iwad ${iwadPath}`);
@@ -100,10 +108,17 @@ enterVRButton.addEventListener("click", async () => {
     await enterVR(
       (msg) => status.log(msg),
       () => {
+        xrActive = false;
+        if (currentModule) setWebXRActive(currentModule, false);
         enterVRButton.textContent = "Enter VR";
         enterVRButton.disabled = false;
       },
+      (orientation, position) => {
+        if (currentModule) setWebXRHeadPose(currentModule, orientation, position);
+      },
     );
+    xrActive = true;
+    if (currentModule) setWebXRActive(currentModule, true);
     enterVRButton.textContent = "Exit VR";
     enterVRButton.disabled = false;
   } catch (err) {

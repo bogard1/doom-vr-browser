@@ -11,6 +11,25 @@ interface EmscriptenFS {
 export interface DoomModule {
   FS: EmscriptenFS;
   callMain(args: string[]): void;
+  ccall(
+    name: string,
+    returnType: string | null,
+    argTypes: string[],
+    args: unknown[],
+  ): unknown;
+}
+
+export interface XRQuaternion {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+
+export interface XRVec3 {
+  x: number;
+  y: number;
+  z: number;
 }
 
 type CreateModule = (config?: Record<string, unknown>) => Promise<DoomModule>;
@@ -89,4 +108,29 @@ export function mountWad(module: DoomModule, wad: LoadedWad): string {
 
 export function startDoom(module: DoomModule, iwadPath: string): void {
   module.callMain(["-iwad", iwadPath]);
+}
+
+// M5: WebXR head-tracking bridge -- see engine/platform/web/vr_webxr.h.
+// active=true switches the engine's render mode from desktop MonoView to
+// WebXRDeviceMode (gl_stereo_cvars.cpp); active=false switches it back, so
+// exiting VR falls straight back to M3's normal desktop rendering.
+export function setWebXRActive(module: DoomModule, active: boolean): void {
+  module.ccall("VR_WebXR_SetActive", null, ["number"], [active ? 1 : 0]);
+}
+
+// Forwards one XR frame's head pose. orientation/position are exactly
+// XRRigidTransform's fields (right-handed, Y-up, -Z-forward, meters,
+// relative to the session's reference space) -- the yaw/pitch/roll
+// conversion and body/head separation all happen engine-side.
+export function setWebXRHeadPose(
+  module: DoomModule,
+  orientation: XRQuaternion,
+  position: XRVec3,
+): void {
+  module.ccall(
+    "VR_WebXR_SetHeadPose",
+    null,
+    ["number", "number", "number", "number", "number", "number", "number"],
+    [orientation.x, orientation.y, orientation.z, orientation.w, position.x, position.y, position.z],
+  );
 }
