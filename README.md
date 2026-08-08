@@ -24,9 +24,12 @@ and [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
 ## Requirements
 
-- **cmake** and **ninja** (e.g. `sudo pacman -S --needed cmake ninja` on
-  Arch, `sudo apt install cmake ninja-build` on Debian/Ubuntu, `brew install
-  cmake ninja` on macOS)
+- **cmake**, **ninja**, and **SDL2 dev headers** (e.g. `sudo pacman -S
+  --needed cmake ninja sdl2` on Arch, `sudo apt install cmake ninja-build
+  libsdl2-dev` on Debian/Ubuntu, `brew install cmake ninja sdl2` on macOS).
+  SDL2 itself is only linked into the *native* host-tools build (see below)
+  -- the actual WASM build gets SDL2 from Emscripten's own port -- but
+  CMake's configure step still needs the dev headers on disk to succeed.
 - **Node.js** + npm (for the web frontend)
 - **git**
 - A C/C++ toolchain able to build a handful of small native host tools
