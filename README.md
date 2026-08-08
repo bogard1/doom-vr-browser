@@ -1,5 +1,7 @@
 # Doom VR (browser)
 
+**[Play it here](https://bogard1.github.io/doom-vr-browser/)** — bring your own WAD.
+
 Run your own legally-owned Doom WAD directly in a browser, compiled to
 WebAssembly from a VR-focused GZDoom/LZDoom fork
 ([QuestZDoom](https://github.com/Team-Beef-Studios/QuestZDoom)). WebXR/VR
