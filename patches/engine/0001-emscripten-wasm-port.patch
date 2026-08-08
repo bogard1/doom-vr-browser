@@ -348,10 +348,192 @@ index 3d66dfad84..4ce3bb5514 100644
  #endif
  #endif
 diff --git c/src/d_main.cpp i/src/d_main.cpp
-index df3bcda9df..781427bf8b 100644
+index df3bcda9df..d024120233 100644
 --- c/src/d_main.cpp
 +++ i/src/d_main.cpp
-@@ -2595,7 +2595,7 @@ static int D_DoomMain_Internal (void)
+@@ -45,6 +45,10 @@
+ #include <math.h>
+ #include <assert.h>
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#endif
++
+ #include "doomerrors.h"
+ 
+ #include "i_time.h"
+@@ -1077,10 +1081,92 @@ void D_ErrorCleanup ()
+ //
+ //==========================================================================
+ 
++// One iteration of the loop below, factored out so it can also be used as
++// an emscripten_set_main_loop callback (see D_DoomLoop). Returns false if
++// the loop should stop (a restart was requested).
++static bool D_DoomLoopTic()
++{
++	try
++	{
++		I_SetFrameTime();
++
++		// process one or more tics
++		if (singletics)
++		{
++			//I_StartTic ();
++			D_ProcessEvents ();
++			G_BuildTiccmd (&netcmds[consoleplayer][maketic%BACKUPTICS]);
++			if (advancedemo)
++				D_DoAdvanceDemo ();
++			C_Ticker ();
++			M_Ticker ();
++			G_Ticker ();
++			// [RH] Use the consoleplayer's camera to update sounds
++			S_UpdateSounds (players[consoleplayer].camera);	// move positional sounds
++			gametic++;
++			maketic++;
++			GC::CheckGC ();
++			Net_NewMakeTic ();
++		}
++		else
++		{
++			TryRunTics (); // will run at least one tic
++		}
++		// Update display, next frame, with current state.
++		//I_StartTic ();
++		D_Display ();
++		S_UpdateMusic();
++		if (wantToRestart)
++		{
++			wantToRestart = false;
++			return false;
++		}
++	}
++	catch (CRecoverableError &error)
++	{
++		if (error.GetMessage ())
++		{
++			Printf (PRINT_BOLD, "\n%s\n", error.GetMessage());
++		}
++		D_ErrorCleanup ();
++	}
++	catch (CVMAbortException &error)
++	{
++		error.MaybePrintMessage();
++		Printf("%s", error.stacktrace.GetChars());
++		D_ErrorCleanup();
++	}
++	return true;
++}
++
++#ifdef __EMSCRIPTEN__
++// A real, natively-blocking `for (;;)` (the #else branch below) never
++// yields to the browser's event loop -- the tab just hangs. There's no
++// per-tic sleep/yield call to make Asyncify-based porting viable here
++// either (confirmed empirically: enabling -sASYNCIFY made the tab's
++// renderer process run out of memory and crash outright, presumably from
++// instrumenting this engine's entire, very large call graph). Driving tics
++// from a real emscripten_set_main_loop callback avoids that cost entirely.
++//
++// Known limitation: a CCMD-triggered restart (renderer switch, etc.) can't
++// resume the caller's do/while loop in D_DoomMain_Internal the way the
++// native blocking loop does -- emscripten_set_main_loop(..., 1) never
++// returns to its caller by design (it unwinds the stack once registered).
++// For now, a restart request just stops the loop with a message instead of
++// actually restarting; making restart work for real is follow-up work, not
++// needed to get gameplay rendering.
++static void D_DoomLoopEmscriptenTic()
++{
++	if (!D_DoomLoopTic())
++	{
++		Printf(PRINT_HIGH, "Restart requested, but restart isn't supported in the web build yet -- stopping.\n");
++		emscripten_cancel_main_loop();
++	}
++}
++#endif
++
+ void D_DoomLoop ()
+ {
+-	int lasttic = 0;
+-
+ 	// Clamp the timer to TICRATE until the playloop has been entered.
+ 	r_NoInterpolate = true;
+ 	Page.SetInvalid();
+@@ -1089,65 +1175,19 @@ void D_DoomLoop ()
+ 
+ 	vid_cursor.Callback();
+ 
++#ifdef __EMSCRIPTEN__
++	// simulate_infinite_loop=1: matches this function's contract (it isn't
++	// supposed to return except via the restart path above) by unwinding
++	// the C++ stack back to the browser event loop instead of actually
++	// returning -- see the comment on D_DoomLoopEmscriptenTic.
++	emscripten_set_main_loop(D_DoomLoopEmscriptenTic, 0, 1);
++#else
+ 	for (;;)
+ 	{
+-		try
+-		{
+-			// frame syncronous IO operations
+-			if (gametic > lasttic)
+-			{
+-				lasttic = gametic;
+-				//I_StartFrame (); // not used
+-			}
+-			I_SetFrameTime();
+-
+-			// process one or more tics
+-			if (singletics)
+-			{
+-				//I_StartTic ();
+-				D_ProcessEvents ();
+-				G_BuildTiccmd (&netcmds[consoleplayer][maketic%BACKUPTICS]);
+-				if (advancedemo)
+-					D_DoAdvanceDemo ();
+-				C_Ticker ();
+-				M_Ticker ();
+-				G_Ticker ();
+-				// [RH] Use the consoleplayer's camera to update sounds
+-				S_UpdateSounds (players[consoleplayer].camera);	// move positional sounds
+-				gametic++;
+-				maketic++;
+-				GC::CheckGC ();
+-				Net_NewMakeTic ();
+-			}
+-			else
+-			{
+-				TryRunTics (); // will run at least one tic
+-			}
+-			// Update display, next frame, with current state.
+-			//I_StartTic ();
+-			D_Display ();
+-			S_UpdateMusic();
+-			if (wantToRestart)
+-			{
+-				wantToRestart = false;
+-				return;
+-			}
+-		}
+-		catch (CRecoverableError &error)
+-		{
+-			if (error.GetMessage ())
+-			{
+-				Printf (PRINT_BOLD, "\n%s\n", error.GetMessage());
+-			}
+-			D_ErrorCleanup ();
+-		}
+-		catch (CVMAbortException &error)
+-		{
+-			error.MaybePrintMessage();
+-			Printf("%s", error.stacktrace.GetChars());
+-			D_ErrorCleanup();
+-		}
++		if (!D_DoomLoopTic())
++			return;
+ 	}
++#endif
+ }
+ 
+ //==========================================================================
+@@ -2595,7 +2635,7 @@ static int D_DoomMain_Internal (void)
  		}
  		nospriterename = false;
  
@@ -360,7 +542,7 @@ index df3bcda9df..781427bf8b 100644
  		// the IWAD is known.
  
  		GetCmdLineFiles(pwads);
-@@ -3025,6 +3025,14 @@ int D_DoomMain()
+@@ -3025,6 +3065,14 @@ int D_DoomMain()
  	return ret;
  }
  
@@ -375,7 +557,7 @@ index df3bcda9df..781427bf8b 100644
  // The command line arguments.
  FArgs *Args;
  
-@@ -3034,6 +3042,7 @@ void VR_DoomMain(int argc, char** argv)
+@@ -3034,6 +3082,7 @@ void VR_DoomMain(int argc, char** argv)
      Args = new FArgs(argc, argv);
      D_DoomMain ();
  }
@@ -524,6 +706,22 @@ index cbdef1f56f..daec8af554 100644
  
  int ogl_ext_ARB_buffer_storage = ogl_LOAD_FAILED;
  int ogl_ext_ARB_shader_storage_buffer_object = ogl_LOAD_FAILED;
+diff --git c/src/gl/system/gl_swframebuffer.cpp i/src/gl/system/gl_swframebuffer.cpp
+index 94db83f032..f8cbd5fa29 100644
+--- c/src/gl/system/gl_swframebuffer.cpp
++++ i/src/gl/system/gl_swframebuffer.cpp
+@@ -1609,7 +1609,10 @@ void OpenGLSWFrameBuffer::UpdatePalette()
+ 
+ bool OpenGLSWFrameBuffer::SetGamma(float gamma)
+ {
+-	Gamma = gamma;
++	// See the identical comment in posix/sdl/sdlvideo.cpp's SDLFB::SetGamma:
++	// reassigning the "Gamma" CVar here recurses forever through its own
++	// CUSTOM_CVAR callback (v_palette.cpp), which calls screen->SetGamma()
++	// unconditionally on every assignment, changed or not.
+ 	NeedGammaUpdate = true;
+ 	return true;
+ }
 diff --git c/src/gl/system/gl_swframebuffer.h i/src/gl/system/gl_swframebuffer.h
 index 007688ea0d..e92ee4d303 100644
 --- c/src/gl/system/gl_swframebuffer.h
@@ -823,7 +1021,7 @@ index 0000000000..798131e285
 +
 +#endif
 diff --git c/src/posix/sdl/sdlvideo.cpp i/src/posix/sdl/sdlvideo.cpp
-index 5eb8a7bf36..47b88abeea 100644
+index 5eb8a7bf36..eed8bc40c6 100644
 --- c/src/posix/sdl/sdlvideo.cpp
 +++ i/src/posix/sdl/sdlvideo.cpp
 @@ -231,7 +231,7 @@ void SDLFB::Update ()
@@ -835,6 +1033,21 @@ index 5eb8a7bf36..47b88abeea 100644
  	if(vid_maxfps && !cl_capfps)
  	{
  		SEMAPHORE_WAIT(FPSLimitSemaphore)
+@@ -377,7 +377,13 @@ void SDLFB::UpdatePalette ()
+ 
+ bool SDLFB::SetGamma (float gamma)
+ {
+-	Gamma = gamma;
++	// Must not reassign the "Gamma" CVar here: every caller of SetGamma
++	// (including Gamma's own CUSTOM_CVAR callback in v_palette.cpp) already
++	// passes Gamma's current value, and FBaseCVar's callback mechanism has
++	// no "value unchanged" short-circuit -- `Gamma = gamma` here would
++	// re-invoke Gamma's callback, which calls screen->SetGamma() again,
++	// unconditionally, forever. (OpenGLFrameBuffer::SetGamma, gl_framebuffer.cpp,
++	// never touched the CVar for the same reason; this matches that.)
+ 	NeedGammaUpdate = true;
+ 	return true;
+ }
 diff --git c/src/posix/sdl/sdlvideo.h i/src/posix/sdl/sdlvideo.h
 new file mode 100644
 index 0000000000..2129f5a622

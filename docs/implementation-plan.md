@@ -367,25 +367,67 @@ title changes to `LZDOOM qzd...` (set via `SDL_SetWindowTitle`, i.e.
 (headless, fails later at `_emscripten_get_screen_size` since Node has no
 `window.screen`, expected) and in a real Chrome tab via claude-in-chrome.
 
-**Current blocker**: immediately after the video subsystem comes up, the
-console shows `emscripten_set_main_loop_timing: Cannot set timing mode for
-main loop since a main loop does not exist!` followed by a fatal
-`RangeError: Maximum call stack size exceeded` — a *JavaScript*-side stack
-overflow (distinct from bug #4's wasm stack overflow, already fixed). Not
-yet root-caused. Likely candidates for the next session: the engine's own
-main-loop driver (`i_time.cpp`/`d_main.cpp`'s `D_DoomLoop`) probably assumes
-a native blocking loop and needs adapting to
-`emscripten_set_main_loop`/`emscripten_set_main_loop_timing` explicitly
-before anything tries to set timing on it; the JS stack overflow may be a
-symptom of a tight recursive JS↔wasm call bounce (e.g. an `invoke_*`
-trampoline recursing) rather than genuine unbounded recursion in game logic.
-Also noted but not yet investigated: ~50 non-fatal
-`"Unknown property 'sky1'/'cluster'/'music'/etc. found in map definition"`
-warnings while parsing `mapinfo/doom2.txt` — the engine continues past
-these, but the specific properties named suggest a real (separate, lower
-priority) MAPINFO-parser registration gap, possibly the same
-linker-section-trick family as bugs above; worth checking whether MAPINFO
-option parsing uses `YReg` correctly once M3's main blocker is resolved.
+**Both remaining blockers from the above are now fixed. M3's core goal
+(Doom actually rendering and responding to input in a real browser tab) is
+done.**
+
+5. **`RangeError: Maximum call stack size exceeded`, root-caused**: genuine
+   infinite recursion, not a JS/wasm trampoline artifact. `Gamma`'s own
+   `CUSTOM_CVAR` callback (`v_palette.cpp`) does
+   `if (screen != NULL) screen->SetGamma(self);`, and both
+   `SDLFB::SetGamma` (`posix/sdl/sdlvideo.cpp`) and
+   `OpenGLSWFrameBuffer::SetGamma` (`gl_swframebuffer.cpp`) — the two
+   *software*-rendering-path framebuffer classes, as opposed to
+   `OpenGLFrameBuffer::SetGamma` in `gl_framebuffer.cpp`, which does **not**
+   have this bug — did `Gamma = gamma;` as their first line. `FBaseCVar`'s
+   callback dispatch (`c_cvars.h`) has no "value unchanged" short-circuit
+   and only guards *virtual* CVars against reentrant callbacks (`Flags &
+   CVAR_VIRTUAL`, which `Gamma` doesn't have), so that assignment
+   unconditionally re-invokes Gamma's own callback, which calls
+   `screen->SetGamma()` again, forever. This is a genuine upstream bug (the
+   comment in the fix explains why), not Emscripten-specific — it would
+   crash identically on any platform that actually exercises the software
+   framebuffer path with CVar callbacks enabled. Fixed by deleting the
+   self-reassignment in both classes (matching the already-correct
+   `OpenGLFrameBuffer` pattern, which only ever *reads* `Gamma`, never
+   writes it back).
+6. **Native blocking main loop**: even with #5 fixed, `D_DoomLoop`'s
+   `for (;;) { ...one tic...; D_Display(); ... }` (`d_main.cpp`) never
+   yields to the browser's event loop, so the tab just hangs forever the
+   instant the game reaches its main loop -- there is no per-tic
+   sleep/delay call to hang an Asyncify port off of, and enabling
+   whole-program `-sASYNCIFY=1` to force one in made the tab's renderer
+   process **run out of memory and crash outright** (94MB `.wasm`, up from
+   57MB, presumably from instrumenting this engine's entire, very large
+   call graph — abandoned rather than trying to hand-scope an
+   `ASYNCIFY_ONLY` allowlist, which seemed likely to be fragile for a
+   codebase this size). Fixed properly instead: factored the loop body out
+   into `D_DoomLoopTic()` and, under `__EMSCRIPTEN__`, drive it via a real
+   `emscripten_set_main_loop(callback, 0, 1)` instead of the native
+   `for (;;)` (non-Emscripten platforms keep the original loop unchanged).
+   **Known limitation**: `emscripten_set_main_loop(..., simulate_infinite_loop=1)`
+   never returns to its caller by design (that's what lets it replace a
+   real infinite loop) — so a CCMD-triggered restart (renderer switch etc.)
+   can no longer resume `D_DoomMain_Internal`'s enclosing `do { ... } while
+   (1)` the way it used to. For now a restart request just stops the main
+   loop with a console message instead of actually restarting; making
+   restart work for real (likely: move the do/while's setup logic into the
+   restart path and re-register a fresh main loop) is follow-up work, not
+   needed to get gameplay rendering.
+
+**Verified working end-to-end in Chrome** (via claude-in-chrome): dropped in
+the user's own `DOOM2.WAD`, the canvas renders the real DOOM2 title screen
+(logo, "id SOFTWARE" splash) and correctly advances through the
+title→credits→demo cycle and back on Enter/Escape keypresses — genuine
+interactive rendering, not a static frame. `docs/questzdoom-architecture.md`
+and this file should be treated as reflecting a **working desktop (non-VR)
+build** as of this fix; remaining loose ends before calling M3 fully closed:
+audio was never explicitly revisited after the M1 `NO_OPENAL=ON` deferral
+(untested whether sound plays), and the ~50 non-fatal `"Unknown property
+'sky1'/'cluster'/'music'/etc. found in map definition"` MAPINFO-parser
+warnings noted earlier are still unexplained (engine continues past them
+without apparent ill effect, but worth checking whether they're the same
+registration-mechanism family as this session's other fixes).
 
 ---
 
