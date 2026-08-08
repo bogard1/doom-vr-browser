@@ -5,6 +5,7 @@ node_modules/
 dist/
 build/
 .tools/
+web/public/engine/
 *.wasm
 *.log
 .DS_Store

@@ -35,6 +35,15 @@ source "${EMSDK_DIR}/emsdk_env.sh" >/dev/null
 
 mkdir -p "${BUILD_DIR}"
 
+# Linker flag notes:
+# -sMODULARIZE/-sEXPORT_ES6: emit an ES module exporting a factory function
+#   (web/src/engine.ts imports it directly) instead of the default
+#   global-`Module`-variable script-tag pattern.
+# -sINVOKE_RUN=0: don't call main() the instant the module finishes loading
+#   -- engine.ts needs to mount the user's WAD into FS first.
+# -sEXPORTED_RUNTIME_METHODS=callMain,FS / -sFORCE_FILESYSTEM=1: expose the
+#   two things engine.ts calls directly (mounting the WAD, starting main()
+#   once it's mounted).
 emcmake cmake \
 	-S "${ENGINE_DIR}" \
 	-B "${BUILD_DIR}" \
@@ -53,7 +62,7 @@ emcmake cmake \
 	-DIMPORT_EXECUTABLES="${IMPORT_EXECUTABLES}" \
 	-DNO_OPENMP=ON \
 	-DCMAKE_CXX_FLAGS="-fexceptions" \
-	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES" \
+	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sFORCE_FILESYSTEM=1" \
 	"$@"
 
 cmake --build "${BUILD_DIR}"

@@ -242,6 +242,34 @@ regardless of filename.
   filename.
 - Clear error shown for invalid/non-WAD files rather than a silent hang.
 
+**Status: done.** `web/` (Vite + TS, per Phase 2's preferred stack) has
+`src/wad-loader.ts` (drag/drop + file-input, validates the IWAD/PWAD magic
+client-side before accepting), `src/engine.ts` (loads the ES-module build of
+`lzdoom.js`, mounts `lzdoom.pk3` and the user's WAD into MEMFS, calls
+`callMain`), `src/debug.ts` (status log), wired up in `src/main.ts`.
+`scripts/dev.sh` copies the engine build into `web/public/engine/` and runs
+`npm run dev`. Verified end-to-end in a real browser via a synthetic
+12-byte placeholder WAD (`IWAD` magic + zero lumps — deliberately *not* any
+real game data, just enough to exercise our own plumbing): file selected →
+WASM module loaded → `lzdoom.pk3` and the WAD mounted into the virtual FS →
+`callMain(["-iwad", "/wads/test.wad"])` → the real engine prints its banner
+and reaches `M_LoadDefaults` before hitting an assertion
+(`Class != nullptr` in `GetClass`) — expected, since a zero-lump WAD has no
+actual game data for ZScript class registration to find. This confirms the
+full browser↔WASM↔FS bridge works; M3 needs a real user-supplied WAD to
+verify actual gameplay.
+
+One build change was needed to make this work cleanly: `scripts/build-wasm.sh`
+now also links with `-sMODULARIZE=1 -sEXPORT_ES6=1
+-sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0
+-sEXPORTED_RUNTIME_METHODS=callMain,FS -sFORCE_FILESYSTEM=1` so `lzdoom.js`
+is a proper ES module `engine.ts` can import (instead of Emscripten's default
+global-`Module`-variable/script-tag pattern) and doesn't call `main()` until
+we've mounted the WAD. Vite's import-analysis plugin still rewrites/rejects a
+literal `import("/engine/lzdoom.js")` of a `public/` build artifact even with
+`/* @vite-ignore */`; worked around in `engine.ts` by hiding the dynamic
+import inside `new Function(...)` so Vite's static scanner never sees it.
+
 ---
 
 ## M3 — Desktop gameplay

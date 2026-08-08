@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light dark;
+  font: 16px/1.5 system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+}
+
+main {
+  width: min(640px, 100%);
+  padding: 2rem 1rem;
+}
+
+h1 {
+  letter-spacing: 0.1em;
+}
+
+#dropzone {
+  border: 2px dashed #888;
+  border-radius: 8px;
+  padding: 2rem;
+  text-align: center;
+}
+
+#dropzone.dragover {
+  border-color: #aa3bff;
+  background: rgba(170, 59, 255, 0.08);
+}
+
+#file-label {
+  color: #aa3bff;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+button#start {
+  display: block;
+  margin: 1rem 0;
+  padding: 0.6rem 1.2rem;
+  font-size: 1rem;
+}
+
+canvas#canvas:not([hidden]) {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  background: #000;
+}
+
+#status {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  border: 1px solid #888;
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+#status .error {
+  color: #d33;
+}
