@@ -453,11 +453,66 @@ since that's a genuine gesture; no JS-side workaround needed for the normal
 flow, but worth remembering if a future *automated* smoke test wants to
 assert on audio state.
 
-Remaining loose end: the ~50 non-fatal `"Unknown property
+**Two more real bugs found once audio was actually exercised end-to-end
+with a real user (2026-08-08)** — both reported by the user as
+`FATAL ERROR: Could not realloc 4294967288 bytes` on a fresh, real Chrome
+run (not just my own automation):
+
+1. **Integer overflow in source-count detection**
+   (`sound/backend/oalsound.cpp`, `OpenALSoundRenderer`'s constructor).
+   `alcGetIntegerv(Device, ALC_MONO_SOURCES/ALC_STEREO_SOURCES, ...)` is
+   supposed to report how many audio sources the hardware supports; the
+   existing code comment already knew some implementations don't return
+   meaningful values here ("At least Apple's OpenAL implementation returns
+   zeroes"). Emscripten's OpenAL-over-WebAudio shim goes further and
+   reports **both as `INT_MAX`** (there's no real hardware limit to
+   report). `numSources = numMono + numStereo` then overflows a 32-bit
+   signed int (`INT_MAX + INT_MAX` wraps to `-2`, confirmed via added
+   diagnostics), and `Sources.Resize(std::min(numChannels, numSources))`
+   interpreted that `-2`-element request as a ~4GB allocation
+   (`-2 elements * 4 bytes = -8 bytes`, which as an unsigned `size_t` is
+   `4294967288` — matches the error message exactly). Fixed by widening the
+   existing `if (0 == numSources)` fallback to `if (numSources <= 0)`,
+   catching the overflow case the same way the already-anticipated
+   "returns zero" case was handled.
+2. **Music streaming needs a thread this build doesn't have.** Once #1 was
+   fixed, gameplay init proceeded further and hit
+   `D_DoAdvanceDemo() → S_ChangeMusic() → S_CreateStream() →
+   OpenALSoundRenderer::CreateStream()`, which lazily spawns one
+   `std::thread` (`BackgroundProc`) to feed the streaming/music audio
+   buffers. This build has no `-pthread` (that needs SharedArrayBuffer +
+   cross-origin-isolation response headers on *every* deployment, which the
+   project brief explicitly says to avoid unless actually required), so
+   `std::thread`'s constructor throws `std::system_error: thread
+   constructor failed: Not supported` — and since nothing in
+   `D_DoomLoopTic()`'s catch clauses matches that exception type, it
+   propagated all the way up through `TryRunTics()` into the
+   `emscripten_set_main_loop` callback and **silently killed every future
+   frame** (confirmed: the canvas just stays black forever after, no
+   further console output). Fixed by catching `std::system_error` around
+   the thread-creation call under `__EMSCRIPTEN__` and returning `NULL`
+   (matching `CreateStream`'s existing failure-to-init path) instead of
+   letting it escape: **streamed music is unavailable, one-shot sound
+   effects (`StartSound`, no thread needed) are unaffected.** Revisiting
+   real music support later means either enabling `-pthread` for real (and
+   accepting the COOP/COEP deployment requirement) or reworking
+   `BackgroundProc`'s feed loop to run without a dedicated thread (e.g.
+   polled from the main tic loop) — not done now, since it wasn't blocking
+   the actual goal (gameplay working).
+
+Verified via the same real-Chrome flow as before (real click, not
+automation): title→credits rendering resumes correctly with both fixes,
+console shows no further errors beyond the one pre-existing harmless
+`emscripten_set_main_loop_timing` warning.
+
+Remaining loose ends: the ~50 non-fatal `"Unknown property
 'sky1'/'cluster'/'music'/etc. found in map definition"` MAPINFO-parser
 warnings noted earlier are still unexplained (engine continues past them
 without apparent ill effect, but worth checking whether they're the same
-registration-mechanism family as this session's other fixes).
+registration-mechanism family as this session's other fixes), and whether
+sound *effects* (as opposed to music) are actually audible hasn't been
+checked yet (only that `OpenALSoundRenderer` initializes and the
+`AudioContext` reaches `"running"`).
 
 ---
 

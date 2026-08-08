@@ -1252,6 +1252,63 @@ index db55dce43c..4ac2252d1e 100644
  
  
  class AActor;
+diff --git c/src/sound/backend/oalsound.cpp i/src/sound/backend/oalsound.cpp
+index a2bd511ac2..e2767eb12a 100644
+--- c/src/sound/backend/oalsound.cpp
++++ i/src/sound/backend/oalsound.cpp
+@@ -680,11 +680,19 @@ OpenALSoundRenderer::OpenALSoundRenderer()
+ 	// meaningful values for ALC_MONO_SOURCES and ALC_MONO_SOURCES.
+ 	// At least Apple's OpenAL implementation returns zeroes,
+ 	// although it can generate reasonable number of sources.
+-
++	//
++	// Emscripten's OpenAL-over-WebAudio shim goes further: it reports both
++	// as INT_MAX (there's no real hardware source limit to report). Summing
++	// two INT_MAX values overflows a 32-bit int and wraps negative, which
++	// then corrupts the byte-size calculation in Sources.Resize() below
++	// (confirmed: numSources came out -2, and TArray's Resize/realloc
++	// interpreted that as a ~4GB allocation request). Guard the sum the
++	// same way "0 sources reported" is already guarded, just checking <= 0
++	// instead of == 0 so the overflow case falls into the same fallback.
+ 	const int numChannels = std::max<int>(snd_channels, 2);
+ 	int numSources = numMono + numStereo;
+ 
+-	if (0 == numSources)
++	if (numSources <= 0)
+ 	{
+ 		numSources = numChannels;
+ 	}
+@@ -1206,7 +1214,30 @@ void OpenALSoundRenderer::UnloadSound(SoundHandle sfx)
+ SoundStream *OpenALSoundRenderer::CreateStream(SoundStreamCallback callback, int buffbytes, int flags, int samplerate, void *userdata)
+ {
+ 	if(StreamThread.get_id() == std::thread::id())
++	{
++#ifdef __EMSCRIPTEN__
++		// This build has no -pthread (that needs SharedArrayBuffer +
++		// cross-origin-isolation response headers on every deployment,
++		// which the project deliberately avoids unless actually required
++		// -- see docs/questzdoom-architecture.md). std::thread's
++		// constructor throws std::system_error here, which otherwise
++		// propagates all the way up through TryRunTics() and aborts the
++		// whole emscripten_set_main_loop callback (confirmed: it doesn't
++		// just fail this one call, it kills every future frame). Streamed
++		// music becomes unavailable; one-shot sound effects (StartSound,
++		// no thread needed) are unaffected.
++		try
++		{
++			StreamThread = std::thread(std::mem_fn(&OpenALSoundRenderer::BackgroundProc), this);
++		}
++		catch (const std::system_error &)
++		{
++			return NULL;
++		}
++#else
+ 		StreamThread = std::thread(std::mem_fn(&OpenALSoundRenderer::BackgroundProc), this);
++#endif
++	}
+ 	OpenALSoundStream *stream = new OpenALSoundStream(this);
+ 	if (!stream->Init(callback, buffbytes, flags, samplerate, userdata))
+ 	{
 diff --git c/src/version.h i/src/version.h
 index 220ce7c3d7..6f92463e16 100644
 --- c/src/version.h
