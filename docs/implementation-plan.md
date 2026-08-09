@@ -871,6 +871,10 @@ hardware validation:
 - Each `XRFrame` forwards the two views' viewport, viewer-relative eye offset,
   and projection matrix to `WebXRDeviceMode`. The engine's stereo path uses
   those values when rendering the left and right eyes.
+- Player sprites are rendered in scene space on a fixed head-relative plane,
+  rather than as an independent 2D image in each eye. This gives the weapon
+  correct stereo disparity; controller-pose-driven weapon placement remains
+  follow-up work for M7.
 - The normal Emscripten loop is paused for an immersive session. The WebXR
   animation-frame callback runs exactly one engine tick/render via
   `VR_WebXR_RunFrame`, while the XR framebuffer is valid, then schedules the

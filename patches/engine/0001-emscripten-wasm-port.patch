@@ -177,10 +177,10 @@ index 0000000000..5cdbe4efad
 +}
 diff --git c/platform/web/vr_webxr.cpp i/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..c0afd496a0
+index 0000000000..dc9a4c7016
 --- /dev/null
 +++ i/platform/web/vr_webxr.cpp
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,377 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -206,6 +206,7 @@ index 0000000000..c0afd496a0
 +
 +CVAR(Bool, vr_webxr_use_position, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 +EXTERN_CVAR(Float, vr_vunits_per_meter)
++EXTERN_CVAR(Float, vr_weaponScale)
 +
 +namespace {
 +
@@ -508,6 +509,39 @@ index 0000000000..c0afd496a0
 +	}
 +}
 +
++void WebXRDeviceMode::AdjustPlayerSprites(int hand) const
++{
++	(void)hand;
++
++	// Player sprites normally use pixel coordinates after Begin2D(), making
++	// the weapon a different screen-space image in each eye. Place that quad
++	// once in world space instead, so the existing eye view matrices create
++	// the correct disparity. WebXR controller poses are not wired yet, so this
++	// is a stable head-relative viewmodel rather than a tracked hand model.
++	const float unitsPerMeter = vr_vunits_per_meter;
++	const float weaponDistance = 0.55f * unitsPerMeter;
++	const float weaponDrop = 0.20f * unitsPerMeter;
++	const DVector2 forward = r_viewpoint.Angles.Yaw.ToVector();
++
++	gl_RenderState.mModelMatrix.loadIdentity();
++	gl_RenderState.mModelMatrix.translate(
++		r_viewpoint.CenterEyePos.X + forward.X * weaponDistance,
++		r_viewpoint.CenterEyePos.Z - weaponDrop,
++		r_viewpoint.CenterEyePos.Y + forward.Y * weaponDistance);
++	gl_RenderState.mModelMatrix.rotate(-90.0f + r_viewpoint.Angles.Yaw.Degrees, 0.0f, 1.0f, 0.0f);
++	gl_RenderState.mModelMatrix.rotate(-r_viewpoint.Angles.Pitch.Degrees, 1.0f, 0.0f, 0.0f);
++
++	const float scale = 0.000625f * vr_weaponScale * unitsPerMeter;
++	gl_RenderState.mModelMatrix.scale(scale, -scale, scale);
++	gl_RenderState.mModelMatrix.translate(-viewwidth / 2, -viewheight * 3 / 4, 0.0f);
++	gl_RenderState.EnableModelMatrix(true);
++}
++
++void WebXRDeviceMode::UnAdjustPlayerSprites() const
++{
++	gl_RenderState.EnableModelMatrix(false);
++}
++
 +void WebXRDeviceMode::Present() const
 +{
 +	if (!WebXR_IsStereoReady()) return;
@@ -526,10 +560,10 @@ index 0000000000..c0afd496a0
 +} // namespace s3d
 diff --git c/platform/web/vr_webxr.h i/platform/web/vr_webxr.h
 new file mode 100644
-index 0000000000..66127750d3
+index 0000000000..b5df6f835b
 --- /dev/null
 +++ i/platform/web/vr_webxr.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,74 @@
 +// WebXR head-tracking and stereo bridge. The browser passes only primitive
 +// values through this C ABI; this code never needs WebXR JS types or the JS
 +// heap.
@@ -587,6 +621,10 @@ index 0000000000..66127750d3
 +	bool IsMono() const override;
 +	void SetUp() const override;
 +	void Present() const override;
++	void AdjustPlayerSprites(int hand = 0) const override;
++	void UnAdjustPlayerSprites() const override;
++	bool RenderPlayerSpritesCrossed() const override { return true; }
++	bool RenderPlayerSpritesInScene() const override { return true; }
 +
 +protected:
 +	WebXRDeviceMode();
