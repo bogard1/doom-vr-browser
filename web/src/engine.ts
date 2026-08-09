@@ -2,6 +2,7 @@
 // copied to public/engine/ by scripts/dev.sh). Keeps the WASM/FS-mounting
 // details out of main.ts.
 import type { LoadedWad } from "./wad-loader";
+import type { XRLocomotion } from "./input";
 
 interface EmscriptenFS {
   mkdirTree(path: string): void;
@@ -176,6 +177,26 @@ export function setWebXRHeadPose(
 // queue, preserving the normal console/menu/game responder order.
 export function postWebXRKey(module: DoomModule, key: number, down: boolean): void {
   module.ccall("VR_WebXR_PostKeyEvent", null, ["number", "number"], [key, down ? 1 : 0]);
+}
+
+// M8: sends the latest analog sticks and grip heading to the engine. Movement
+// is consumed once per Doom tic by VR_GetMove; snap-turn is edge-triggered
+// natively so it remains stable at all headset refresh rates.
+export function setWebXRLocomotion(module: DoomModule, locomotion: XRLocomotion): void {
+  module.ccall(
+    "VR_WebXR_SetLocomotion",
+    null,
+    ["number", "number", "number", "number", "number", "number", "number"],
+    [
+      locomotion.validMask,
+      locomotion.leftX,
+      locomotion.leftY,
+      locomotion.rightX,
+      locomotion.rightY,
+      locomotion.leftYawDeg,
+      locomotion.rightYawDeg,
+    ],
+  );
 }
 
 // M6: forwards the viewer-relative pose, viewport and projection supplied by

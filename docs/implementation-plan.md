@@ -1218,7 +1218,7 @@ project brief's example signatures), `platform/web/vr_webxr.cpp`.
   smoke test; full haptic design can wait, but the browser API path must be
   proven end-to-end here.
 
-**Status: implemented in source, pending headset validation.**
+**Status: implemented and validated on Quest.**
 `web/src/input.ts` accepts only `xr-standard` controllers with a left or right
 handedness. It snapshots a controller's initial state, emits events only on
 transitions, and releases every held key if the controller disappears, changes
@@ -1269,6 +1269,25 @@ locomotion direction mode.
 - Right stick snap-turns at a configurable angle (default 30°).
 - No motion-sickness-inducing artifacts from incorrect yaw composition
   (manual playtest checklist, not automatable).
+
+**Status: implemented in source, pending headset validation.**
+`web/src/input.ts` samples each `xr-standard` stick's true analog axes and,
+when available, its `gripSpace` yaw in the same `local-floor`/`local` reference
+space as the headset. `VR_WebXR_SetLocomotion` passes this snapshot to the
+engine once per XR frame. `VR_GetMove()` consumes the stored left stick state
+once per Doom tic, after a radial 0.20 deadzone and rescale, so speed varies
+smoothly from zero to full movement. The normal mode rotates that input by the
+head's recentered yaw; `vr_move_use_offhand` instead uses the movement
+controller's recentered yaw. `vr_switch_sticks` swaps both movement and turning
+sticks.
+
+The other stick triggers one body-yaw increment when it crosses +/-0.60 and
+must return inside +/-0.45 before another turn. The `vr_snapTurn` archive CVar
+now defaults to 30 degrees. It is applied through `G_AddViewAngle`, leaving M5
+head tracking untouched. WebXR M8 deliberately does not implement room-scale
+translation, teleport aiming, controller-tracked weapons, or haptics beyond
+M7's fire pulse; those remain later milestones. The existing digital stick-key
+events remain available for menus and user bindings alongside analog movement.
 
 ---
 

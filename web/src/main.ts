@@ -1,6 +1,6 @@
 import "./style.css";
 import { readWadFile, type LoadedWad } from "./wad-loader";
-import { getEngineContext, invalidateWebXRFramebuffer, loadEngine, mountWad, postWebXRKey, registerWebXRFramebuffer, runWebXRFrame, startDoom, setWebXRActive, setWebXREye, setWebXRHeadPose, type DoomModule } from "./engine";
+import { getEngineContext, invalidateWebXRFramebuffer, loadEngine, mountWad, postWebXRKey, registerWebXRFramebuffer, runWebXRFrame, startDoom, setWebXRActive, setWebXREye, setWebXRHeadPose, setWebXRLocomotion, type DoomModule } from "./engine";
 import { StatusLog } from "./debug";
 import { WebXRInput } from "./input";
 import { enterVR, exitVR, isImmersiveVRSupported, isInXRSession } from "./xr";
@@ -145,8 +145,9 @@ enterVRButton.addEventListener("click", async () => {
           for (const view of views) setWebXREye(currentModule, view);
         }
       },
-      (sources) => {
+      (sources, frame, refSpace) => {
         xrInput.update(sources, doomStarted, postXRKey);
+        if (currentModule) setWebXRLocomotion(currentModule, xrInput.locomotion(sources, frame, refSpace));
       },
       () => {
         runWebXRFrame(engine);

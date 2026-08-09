@@ -100,17 +100,16 @@ index 0000000000..b702488784
 +#endif //vrinput_h
 diff --git c/platform/emscripten-stub/vr_stub.cpp i/platform/emscripten-stub/vr_stub.cpp
 new file mode 100644
-index 0000000000..5cdbe4efad
+index 0000000000..916d6a57cb
 --- /dev/null
 +++ i/platform/emscripten-stub/vr_stub.cpp
-@@ -0,0 +1,71 @@
-+// Definitions for the globals declared in QzDoom/VrCommon.h (see that
-+// file's header comment). VR is not wired up yet for the Emscripten build
-+// (docs/implementation-plan.md M1-M3 come before WebXR in M4+), so every
-+// value here is an inert default: no VR is active, no movement/rotation is
-+// injected, nothing is ever true.
+@@ -0,0 +1,69 @@
++// Definitions for QuestZDoom globals that WebXR does not use directly. The
++// browser bridge supplies thumbstick locomotion through VR_GetMove();
++// controller poses and room-scale movement remain later milestones.
 +#include <cstdint>
 +#include "QzDoom/VrCommon.h"
++#include "../web/vr_webxr.h"
 +
 +bool qzdoom_initialised = false;
 +
@@ -161,13 +160,12 @@ index 0000000000..5cdbe4efad
 +void QzDoom_setUseScreenLayer(bool use) {}
 +void jni_shutdown() {}
 +
-+// g_game.cpp declares this itself (extern) and calls it every tic; with no
-+// VR input source yet, report no movement.
++// g_game.cpp calls this every tic. WebXR updates analog state once per XR
++// frame; positional room-scale movement and orientation outputs remain zero.
 +void VR_GetMove(float *joy_forward, float *joy_side, float *hmd_forward, float *hmd_side,
 +	float *up, float *yaw, float *pitch, float *roll)
 +{
-+	*joy_forward = 0;
-+	*joy_side = 0;
++	WebXR_GetLocomotion(joy_forward, joy_side);
 +	*hmd_forward = 0;
 +	*hmd_side = 0;
 +	*up = 0;
@@ -177,10 +175,10 @@ index 0000000000..5cdbe4efad
 +}
 diff --git c/platform/web/vr_webxr.cpp i/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..35f826b633
+index 0000000000..163ad8f63e
 --- /dev/null
 +++ i/platform/web/vr_webxr.cpp
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,467 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -203,12 +201,16 @@ index 0000000000..35f826b633
 +#include "c_dispatch.h"
 +#include "d_event.h"
 +#include "doomdef.h"
++#include "g_game.h"
 +#include "gl/renderer/gl_renderer.h"
 +#include "gl/renderer/gl_renderbuffers.h"
 +
 +CVAR(Bool, vr_webxr_use_position, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 +EXTERN_CVAR(Float, vr_vunits_per_meter)
 +EXTERN_CVAR(Float, vr_weaponScale)
++EXTERN_CVAR(Bool, vr_move_use_offhand)
++EXTERN_CVAR(Bool, vr_switch_sticks)
++EXTERN_CVAR(Float, vr_snapTurn)
 +
 +namespace {
 +
@@ -243,6 +245,9 @@ index 0000000000..35f826b633
 +double g_pitchDeg = 0.0;
 +double g_rollDeg = 0.0;
 +double g_heightMeters = 0.0;
++float g_locomotionForward = 0.0f;
++float g_locomotionSide = 0.0f;
++int g_snapTurnLatch = 0;
 +
 +struct WebXREyeState
 +{
@@ -269,6 +274,24 @@ index 0000000000..35f826b633
 +		state.viewport.width > 0 && state.viewport.height > 0;
 +}
 +
++float ApplyStickDeadzone(float value, float other, float &outOther)
++{
++	const float length = std::sqrt(value * value + other * other);
++	if (length <= 0.20f)
++	{
++		outOther = 0.0f;
++		return 0.0f;
++	}
++	const float scale = std::min(1.0f, (length - 0.20f) / 0.80f) / length;
++	outOther = other * scale;
++	return value * scale;
++}
++
++int AngleFromDegrees(float degrees)
++{
++	return static_cast<int>(std::round(65535.0f * degrees / 360.0f));
++}
++
 +} // namespace
 +
 +bool WebXR_IsActive()
@@ -290,6 +313,8 @@ index 0000000000..35f826b633
 +	if (!g_active)
 +	{
 +		g_yawDeg = g_pitchDeg = g_rollDeg = g_heightMeters = 0.0;
++		g_locomotionForward = g_locomotionSide = 0.0f;
++		g_snapTurnLatch = 0;
 +		g_xrFramebuffer = 0;
 +		WebXR_ReleaseLayerFramebuffer();
 +		g_eyes[0] = WebXREyeState();
@@ -438,12 +463,63 @@ index 0000000000..35f826b633
 +	D_PostEvent(&event);
 +}
 +
++void VR_WebXR_SetLocomotion(int validMask,
++	float leftX, float leftY, float rightX, float rightY,
++	float leftYawDeg, float rightYawDeg)
++{
++	if (!g_active) return;
++	const bool useRightStick = vr_switch_sticks;
++	const bool hasMoveStick = validMask & (useRightStick ? 2 : 1);
++	const float moveX = useRightStick ? rightX : leftX;
++	const float moveY = useRightStick ? rightY : leftY;
++	const bool hasMoveYaw = validMask & (useRightStick ? 8 : 4);
++	const float moveYaw = useRightStick ? rightYawDeg : leftYawDeg;
++
++	if (!hasMoveStick || !std::isfinite(moveX) || !std::isfinite(moveY))
++	{
++		g_locomotionForward = g_locomotionSide = 0.0f;
++	}
++	else
++	{
++		float side = std::max(-1.0f, std::min(1.0f, moveX));
++		float forward = std::max(-1.0f, std::min(1.0f, -moveY));
++		forward = ApplyStickDeadzone(forward, side, side);
++
++		float heading = static_cast<float>(g_yawDeg);
++		if (vr_move_use_offhand && hasMoveYaw && g_haveYawZero && std::isfinite(moveYaw))
++		{
++			heading = moveYaw - static_cast<float>(g_yawZeroDeg);
++		}
++		const float radians = DEG2RAD(heading);
++		g_locomotionForward = forward * std::cos(radians) + side * std::sin(radians);
++		g_locomotionSide = -forward * std::sin(radians) + side * std::cos(radians);
++	}
++
++	const float snapX = useRightStick ? leftX : rightX;
++	const bool hasSnapStick = validMask & (useRightStick ? 1 : 2);
++	if (!hasSnapStick || !std::isfinite(snapX) || std::abs(snapX) < 0.45f)
++	{
++		g_snapTurnLatch = 0;
++	}
++	else if (g_snapTurnLatch == 0 && std::abs(snapX) >= 0.60f)
++	{
++		g_snapTurnLatch = snapX > 0.0f ? 1 : -1;
++		G_AddViewAngle(g_snapTurnLatch * AngleFromDegrees(vr_snapTurn));
++	}
++}
++
 +void VR_WebXR_Recenter()
 +{
 +	g_haveYawZero = false;
 +}
 +
 +} // extern "C"
++
++void WebXR_GetLocomotion(float *forward, float *side)
++{
++	*forward = g_locomotionForward;
++	*side = g_locomotionSide;
++}
 +
 +CCMD(vr_recenter)
 +{
@@ -572,10 +648,10 @@ index 0000000000..35f826b633
 +} // namespace s3d
 diff --git c/platform/web/vr_webxr.h i/platform/web/vr_webxr.h
 new file mode 100644
-index 0000000000..aafb192108
+index 0000000000..28c557cb53
 --- /dev/null
 +++ i/platform/web/vr_webxr.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,79 @@
 +// WebXR head-tracking and stereo bridge. The browser passes only primitive
 +// values through this C ABI; this code never needs WebXR JS types or the JS
 +// heap.
@@ -589,6 +665,7 @@ index 0000000000..aafb192108
 +bool WebXR_IsActive();
 +bool WebXR_IsStereoReady();
 +void WebXR_SetFrameOwnership(bool active);
++void WebXR_GetLocomotion(float *forward, float *side);
 +
 +extern "C" {
 +
@@ -604,6 +681,9 @@ index 0000000000..aafb192108
 +	float m08, float m09, float m10, float m11,
 +	float m12, float m13, float m14, float m15);
 +void VR_WebXR_PostKeyEvent(int key, int down);
++void VR_WebXR_SetLocomotion(int validMask,
++	float leftX, float leftY, float rightX, float rightY,
++	float leftYawDeg, float rightYawDeg);
 +int VR_WebXR_RunFrame();
 +
 +} // extern "C"
@@ -1322,7 +1402,7 @@ index 0929d373a0..447b16e424 100644
  //==========================================================================
 -
 diff --git c/src/gl/stereo3d/gl_stereo_cvars.cpp i/src/gl/stereo3d/gl_stereo_cvars.cpp
-index 1b0277a845..1c0c5a4501 100644
+index 1b0277a845..9f60a9da8b 100644
 --- c/src/gl/stereo3d/gl_stereo_cvars.cpp
 +++ i/src/gl/stereo3d/gl_stereo_cvars.cpp
 @@ -36,6 +36,10 @@
@@ -1336,6 +1416,15 @@ index 1b0277a845..1c0c5a4501 100644
  // Set up 3D-specific console variables:
  CVAR(Int, vr_mode, 15, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
  
+@@ -68,7 +72,7 @@ CVAR(Bool, vr_move_use_offhand, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+ CVAR(Bool, vr_teleport, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+ CVAR(Float, vr_weaponRotate, -30, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+ CVAR(Float, vr_weaponScale, 1.02f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+-CVAR(Float, vr_snapTurn, 45.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
++CVAR(Float, vr_snapTurn, 30.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+ CVAR(Int, vr_move_speed, 19, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+ CVAR(Float, vr_run_multiplier, 1.5, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+ CVAR(Bool, vr_switch_sticks, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 @@ -108,9 +112,28 @@ void Stereo3DMode::setCurrentMode(const Stereo3DMode& mode) {
  }
  
@@ -1366,6 +1455,11 @@ index 1b0277a845..1c0c5a4501 100644
  	return *currentStereo3DMode;
  }
  
+@@ -122,4 +145,3 @@ const Stereo3DMode& Stereo3DMode::getMonoMode()
+ 
+ 
+ } /* namespace s3d */
+-
 diff --git c/src/gl/system/gl_framebuffer.cpp i/src/gl/system/gl_framebuffer.cpp
 index 76a25cc323..b1cc3b8dd7 100644
 --- c/src/gl/system/gl_framebuffer.cpp

@@ -38,11 +38,13 @@ validated on headset hardware for session lifecycle, head tracking, world
 stereo, and a fixed head-relative weapon viewmodel.
 
 The page now displays rolling XR frame cadence and JS/WASM engine CPU time.
-M7 also translates `xr-standard` controller transitions to the engine's normal
-virtual gamepad keys; it needs Quest validation before locomotion and
-controller-tracked weapons. The analysis and strategy sections below retain the
-original risks and decisions; where they describe a future porting task, the
-later status notes supersede them.
+M7 translates `xr-standard` controller transitions to the engine's normal
+virtual gamepad keys and has been validated on Quest. M8 supplies analog-stick
+locomotion and snap-turn through the same Emscripten bridge; headset validation
+is still needed for that new movement path. Controller-tracked weapons remain
+future work. The analysis and strategy sections below retain the original risks
+and decisions; where they describe a future porting task, the later status notes
+supersede them.
 
 ## 2. Relevant repositories / submodules
 
@@ -223,6 +225,22 @@ data crossing it is raw mutable globals rather than a struct.
   happens engine-side (`gl_openxrdevice.cpp` ~L604–634, `P_LineTrace` /
   `P_XYMovement`).
 
+### Browser M8 locomotion status
+
+The browser bridge deliberately implements only the smooth-thumbstick portion
+of the model above. Each WebXR frame supplies left/right `xr-standard` axes and
+optional grip yaw to `VR_WebXR_SetLocomotion`; its cached output is read by the
+Emscripten `VR_GetMove()` at each game tic. A radial 0.20 deadzone avoids
+controller drift. Movement is head-relative by default and becomes
+movement-controller-relative with `vr_move_use_offhand`; `vr_switch_sticks`
+swaps movement and turn sticks. The turn stick applies one `vr_snapTurn`
+increment when it crosses +/-0.60, and must return below +/-0.45 to rearm.
+
+This avoids modifying the native head-pose path: snap-turn calls
+`G_AddViewAngle`, which rotates the player body, while the headset's recentered
+yaw continues to drive the independent view offset. There is no browser
+room-scale movement, teleport implementation, or controller weapon pose yet.
+
 ### Threading model
 
 Single native "app thread" (via `pthread_create`) owns both the OpenXR frame
@@ -402,9 +420,9 @@ thread-free streamed-music limitation.
 
 ## 16. Original Web Port Strategy
 
-The strategy below guided the completed M1-M6 implementation. The current
-architecture is summarized at the top of this document and in the M6 status
-of `implementation-plan.md`; M7-M10 remain future work.
+The strategy below guided the completed M1-M8 implementation. The current
+architecture is summarized at the top of this document and in the M8 status
+of `implementation-plan.md`; M9-M10 remain future work.
 
 1. **Engine choice: adapt LZDoom/`DrBeef/gzdoom@questzdoom` itself**, not a
    simpler engine (PrBoom+/dsda-doom/Crispy/Chocolate Doom). Those engines

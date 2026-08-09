@@ -27,7 +27,11 @@ export type XRViewsFn = (
   }>,
 ) => void;
 export type XRFrameFn = () => void;
-export type XRInputSourcesFn = (sources: readonly XRInputSource[]) => void;
+export type XRInputSourcesFn = (
+  sources: readonly XRInputSource[],
+  frame: XRFrame,
+  refSpace: XRReferenceSpace,
+) => void;
 export interface XRFrameMetrics {
   frameMs: number;
   fps: number;
@@ -169,7 +173,7 @@ function onXRFrame(
     const sources = Array.from(xrFrame.session.inputSources);
     // Sample controls before the engine tick so transitions are consumed by
     // the same frame's normal input queue.
-    onInputSources(sources);
+    onInputSources(sources, xrFrame, refSpace);
 
     // The engine's independent browser rAF is paused during XR. Rendering
     // here keeps its framebuffer use inside this XR frame's valid window.

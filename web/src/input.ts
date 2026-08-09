@@ -1,6 +1,5 @@
-// Converts xr-standard controller samples into the engine's existing virtual
-// gamepad keys. Movement remains M8; stick directions are digital here only
-// so menus and user bindings work before locomotion is introduced.
+// Converts xr-standard controller samples into Doom input and retains analog
+// thumbstick/controller-pose state for M8's native locomotion bridge.
 const KEY_PAD_LTHUMB_RIGHT = 0x1ac;
 const KEY_PAD_LTHUMB_LEFT = 0x1ad;
 const KEY_PAD_LTHUMB_DOWN = 0x1ae;
@@ -24,6 +23,16 @@ const AXIS_PRESS_THRESHOLD = 0.6;
 const AXIS_RELEASE_THRESHOLD = 0.45;
 
 type KeyPostFn = (key: number, down: boolean) => void;
+
+export interface XRLocomotion {
+  validMask: number;
+  leftX: number;
+  leftY: number;
+  rightX: number;
+  rightY: number;
+  leftYawDeg: number;
+  rightYawDeg: number;
+}
 
 interface SourceState {
   keys: Set<number>;
@@ -130,6 +139,51 @@ export class WebXRInput {
 
   reset(enabled: boolean, postKey: KeyPostFn): void {
     for (const [source, state] of this.sources) this.release(source, state, enabled, postKey);
+  }
+
+  locomotion(
+    inputSources: readonly XRInputSource[],
+    frame: XRFrame,
+    refSpace: XRReferenceSpace,
+  ): XRLocomotion {
+    const state: XRLocomotion = {
+      validMask: 0,
+      leftX: 0,
+      leftY: 0,
+      rightX: 0,
+      rightY: 0,
+      leftYawDeg: 0,
+      rightYawDeg: 0,
+    };
+    for (const source of inputSources) {
+      const gamepad = source.gamepad;
+      if (!gamepad || gamepad.mapping !== "xr-standard" || (source.handedness !== "left" && source.handedness !== "right")) continue;
+
+      const axisStart = gamepad.axes.length >= 4 ? 2 : 0;
+      const x = gamepad.axes[axisStart];
+      const y = gamepad.axes[axisStart + 1];
+      const isLeft = source.handedness === "left";
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        state.validMask |= isLeft ? 1 : 2;
+        if (isLeft) {
+          state.leftX = x;
+          state.leftY = y;
+        } else {
+          state.rightX = x;
+          state.rightY = y;
+        }
+      }
+
+      const pose = frame.getPose(source.gripSpace ?? source.targetRaySpace, refSpace);
+      if (!pose) continue;
+      const { x: qx, y: qy, z: qz, w: qw } = pose.transform.orientation;
+      const yawDeg = -Math.atan2(2 * (qx * qz - qw * qy), 1 - 2 * (qx * qx + qy * qy)) * 180 / Math.PI;
+      if (!Number.isFinite(yawDeg)) continue;
+      state.validMask |= isLeft ? 4 : 8;
+      if (isLeft) state.leftYawDeg = yawDeg;
+      else state.rightYawDeg = yawDeg;
+    }
+    return state;
   }
 
   private release(source: XRInputSource, state: SourceState, enabled: boolean, postKey: KeyPostFn): void {
