@@ -1,6 +1,6 @@
 import "./style.css";
 import { readWadFile, type LoadedWad } from "./wad-loader";
-import { loadEngine, mountWad, startDoom, setWebXRActive, setWebXRHeadPose, type DoomModule } from "./engine";
+import { getEngineContext, invalidateWebXRFramebuffer, loadEngine, mountWad, registerWebXRFramebuffer, runWebXRFrame, startDoom, setWebXRActive, setWebXREye, setWebXRHeadPose, type DoomModule } from "./engine";
 import { StatusLog } from "./debug";
 import { enterVR, exitVR, isImmersiveVRSupported, isInXRSession } from "./xr";
 
@@ -40,6 +40,7 @@ let currentWad: LoadedWad | null = null;
 // activates exactly when both sides are ready, in either order.
 let currentModule: DoomModule | null = null;
 let xrActive = false;
+let doomStarted = false;
 
 async function handleFile(file: File): Promise<void> {
   try {
@@ -84,7 +85,8 @@ startButton.addEventListener("click", async () => {
     status.log("Mounting WAD…");
     const iwadPath = mountWad(engine, currentWad);
     status.log(`Starting engine with -iwad ${iwadPath}`);
-    startDoom(engine, iwadPath);
+    doomStarted = true;
+    startDoom(engine, iwadPath, xrActive);
   } catch (err) {
     status.error(err instanceof Error ? err.message : String(err));
     startButton.disabled = false;
@@ -105,21 +107,42 @@ enterVRButton.addEventListener("click", async () => {
   }
   enterVRButton.disabled = true;
   try {
+    const engine = currentModule ?? await loadEngine(canvas, (msg) => status.log(msg));
+    currentModule = engine;
     await enterVR(
       (msg) => status.log(msg),
       () => {
         xrActive = false;
-        if (currentModule) setWebXRActive(currentModule, false);
+        if (currentModule) {
+          invalidateWebXRFramebuffer(currentModule);
+          setWebXRActive(currentModule, false);
+        }
         enterVRButton.textContent = "Enter VR";
         enterVRButton.disabled = false;
+      },
+      (framebuffer) => registerWebXRFramebuffer(engine, framebuffer),
+      () => {
+        if (doomStarted) {
+          status.error("Restart Doom after entering VR to use the hardware stereo renderer.");
+          exitVR();
+          return;
+        }
+        xrActive = true;
+        setWebXRActive(engine, true);
       },
       (orientation, position) => {
         if (currentModule) setWebXRHeadPose(currentModule, orientation, position);
       },
-      canvas,
+      (views) => {
+        if (currentModule) {
+          for (const view of views) setWebXREye(currentModule, view);
+        }
+      },
+      () => {
+        runWebXRFrame(engine);
+      },
+      getEngineContext(),
     );
-    xrActive = true;
-    if (currentModule) setWebXRActive(currentModule, true);
     enterVRButton.textContent = "Exit VR";
     enterVRButton.disabled = false;
   } catch (err) {

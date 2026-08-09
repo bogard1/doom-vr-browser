@@ -5,7 +5,8 @@
 Run your own legally-owned Doom WAD directly in a browser, compiled to
 WebAssembly from a VR-focused GZDoom/LZDoom fork
 ([QuestZDoom](https://github.com/Team-Beef-Studios/QuestZDoom)). WebXR/VR
-support is planned but not built yet — see [Status](#status) below.
+support includes a direct stereo-rendering pipeline; its headset validation is
+still in progress — see [Status](#status) below.
 
 The WAD you supply never leaves your browser: it's read into memory
 client-side and mounted directly into the WASM module's virtual filesystem.
@@ -16,7 +17,9 @@ Nothing is uploaded anywhere.
 - ✅ Engine compiles and runs under Emscripten
 - ✅ WAD upload → in-browser gameplay (video, keyboard input, audio)
 - ✅ Verified end-to-end in Chrome with a real `DOOM2.WAD`
-- 🚧 WebXR / VR controls — not started (see `docs/implementation-plan.md`, M4+)
+- 🚧 WebXR session lifecycle, head tracking, and the direct per-eye stereo
+  pipeline are implemented. Quest validation, controller input, and locomotion
+  remain in progress (see `docs/implementation-plan.md`, M6+)
 - ⚠️ Known limitation: in-game renderer-restart (a rarely-used CCMD) doesn't
   work in the browser build; regular gameplay is unaffected
 

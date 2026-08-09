@@ -19,6 +19,10 @@ export interface DoomModule {
   ): unknown;
 }
 
+interface WebXRModule extends DoomModule {
+  webxrLayerFramebuffer?: WebGLFramebuffer | null;
+}
+
 export interface XRQuaternion {
   x: number;
   y: number;
@@ -32,9 +36,17 @@ export interface XRVec3 {
   z: number;
 }
 
+export interface XREyeFrame {
+  eye: "left" | "right";
+  viewport: { x: number; y: number; width: number; height: number };
+  offset: XRVec3;
+  projection: Float32Array;
+}
+
 type CreateModule = (config?: Record<string, unknown>) => Promise<DoomModule>;
 
 let modulePromise: Promise<DoomModule> | null = null;
+let engineContext: WebGL2RenderingContext | null = null;
 
 // public/engine/lzdoom.js is a build artifact copied in by scripts/dev.sh,
 // not source Vite can bundle -- a plain `import()` gets rewritten by Vite's
@@ -72,8 +84,22 @@ export async function loadEngine(
       onStatus("Loading WASM module…");
       const { default: createLzdoomModule } = await importEngineModule(`${ENGINE_BASE}lzdoom.js`);
 
+      // M6 creates the engine context up front so it can later be handed to
+      // XRWebGLLayer. Emscripten must reuse this exact context to render into
+      // the compositor's framebuffer.
+      engineContext = canvas.getContext("webgl2", {
+        alpha: false,
+        depth: true,
+        stencil: true,
+        antialias: false,
+        preserveDrawingBuffer: true,
+        xrCompatible: true,
+      });
+      if (!engineContext) throw new Error("WebGL2 is required to start the engine.");
+
       const module = await createLzdoomModule({
         canvas,
+        preinitializedWebGLContext: engineContext,
         print: (text: string) => console.log("[doom]", text),
         printErr: (text: string) => console.error("[doom]", text),
         locateFile: (path: string) => `${ENGINE_BASE}${path}`,
@@ -95,6 +121,11 @@ export async function loadEngine(
   return modulePromise;
 }
 
+export function getEngineContext(): WebGL2RenderingContext {
+  if (!engineContext) throw new Error("The engine WebGL2 context has not been created.");
+  return engineContext;
+}
+
 // Writes the user's WAD into the virtual filesystem and returns its path.
 // The filename is preserved as-is -- the engine detects IWAD type from
 // content, not name (see docs/questzdoom-architecture.md §8).
@@ -106,8 +137,15 @@ export function mountWad(module: DoomModule, wad: LoadedWad): string {
   return path;
 }
 
-export function startDoom(module: DoomModule, iwadPath: string): void {
-  module.callMain(["-iwad", iwadPath]);
+export function startDoom(module: DoomModule, iwadPath: string, useHardwareRenderer = false): void {
+  const args = ["-iwad", iwadPath];
+  // Kept opt-in while M6 brings up the WebGL2 renderer. Normal gameplay
+  // remains on the known-good software renderer until the hardware path is
+  // proven on desktop Chrome and Quest.
+  if (useHardwareRenderer || new URLSearchParams(window.location.search).get("renderer") === "gl") {
+    args.push("+vid_renderer", "1");
+  }
+  module.callMain(args);
 }
 
 // M5: WebXR head-tracking bridge -- see engine/platform/web/vr_webxr.h.
@@ -133,4 +171,48 @@ export function setWebXRHeadPose(
     ["number", "number", "number", "number", "number", "number", "number"],
     [orientation.x, orientation.y, orientation.z, orientation.w, position.x, position.y, position.z],
   );
+}
+
+// M6: forwards the viewer-relative pose, viewport and projection supplied by
+// one XRView. The engine stays mono until the XR layer framebuffer is
+// registered, so this can be wired and validated independently of presenting
+// into the headset.
+export function setWebXREye(module: DoomModule, frame: XREyeFrame): void {
+  if (frame.projection.length !== 16) {
+    throw new Error(`Expected a 4x4 projection matrix for the ${frame.eye} eye.`);
+  }
+  const eye = frame.eye === "left" ? 0 : 1;
+  module.ccall(
+    "VR_WebXR_SetEyeViewport",
+    null,
+    ["number", "number", "number", "number", "number"],
+    [eye, frame.viewport.x, frame.viewport.y, frame.viewport.width, frame.viewport.height],
+  );
+  module.ccall(
+    "VR_WebXR_SetEyeOffset",
+    null,
+    ["number", "number", "number", "number"],
+    [eye, frame.offset.x, frame.offset.y, frame.offset.z],
+  );
+  module.ccall(
+    "VR_WebXR_SetEyeProjection",
+    null,
+    ["number", ...Array<string>(16).fill("number")],
+    [eye, ...Array.from(frame.projection)],
+  );
+}
+
+export function runWebXRFrame(module: DoomModule): void {
+  module.ccall("VR_WebXR_RunFrame", "number", [], []);
+}
+
+export function registerWebXRFramebuffer(module: DoomModule, framebuffer: WebGLFramebuffer): void {
+  // EM_JS in vr_webxr.cpp owns the translation from this opaque object to an
+  // Emscripten GL handle. Keep it on the module closure, not window globals.
+  (module as WebXRModule).webxrLayerFramebuffer = framebuffer;
+  module.ccall("VR_WebXR_RegisterFramebuffer", null, ["number"], [0]);
+}
+
+export function invalidateWebXRFramebuffer(module: DoomModule): void {
+  module.ccall("VR_WebXR_InvalidateFramebuffer", null, [], []);
 }

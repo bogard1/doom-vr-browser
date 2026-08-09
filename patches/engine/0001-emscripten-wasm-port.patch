@@ -1,8 +1,8 @@
-diff --git i/platform/emscripten-stub/QzDoom/VrCommon.h w/platform/emscripten-stub/QzDoom/VrCommon.h
+diff --git c/platform/emscripten-stub/QzDoom/VrCommon.h i/platform/emscripten-stub/QzDoom/VrCommon.h
 new file mode 100644
 index 0000000000..ff1b9170d2
 --- /dev/null
-+++ w/platform/emscripten-stub/QzDoom/VrCommon.h
++++ i/platform/emscripten-stub/QzDoom/VrCommon.h
 @@ -0,0 +1,75 @@
 +// Stand-in for QuestZDoom's Projects/Android/jni/QzDoom/VrCommon.h.
 +//
@@ -79,11 +79,11 @@ index 0000000000..ff1b9170d2
 +void jni_shutdown();
 +
 +#endif //vrcommon_h
-diff --git i/platform/emscripten-stub/QzDoom/VrInput.h w/platform/emscripten-stub/QzDoom/VrInput.h
+diff --git c/platform/emscripten-stub/QzDoom/VrInput.h i/platform/emscripten-stub/QzDoom/VrInput.h
 new file mode 100644
 index 0000000000..b702488784
 --- /dev/null
-+++ w/platform/emscripten-stub/QzDoom/VrInput.h
++++ i/platform/emscripten-stub/QzDoom/VrInput.h
 @@ -0,0 +1,13 @@
 +// Stand-in for QuestZDoom's Projects/Android/jni/QzDoom/VrInput.h -- see the
 +// comment in the sibling VrCommon.h stub for why this exists. g_game.cpp is
@@ -98,11 +98,11 @@ index 0000000000..b702488784
 +#include "VrCommon.h"
 +
 +#endif //vrinput_h
-diff --git i/platform/emscripten-stub/vr_stub.cpp w/platform/emscripten-stub/vr_stub.cpp
+diff --git c/platform/emscripten-stub/vr_stub.cpp i/platform/emscripten-stub/vr_stub.cpp
 new file mode 100644
 index 0000000000..5cdbe4efad
 --- /dev/null
-+++ w/platform/emscripten-stub/vr_stub.cpp
++++ i/platform/emscripten-stub/vr_stub.cpp
 @@ -0,0 +1,71 @@
 +// Definitions for the globals declared in QzDoom/VrCommon.h (see that
 +// file's header comment). VR is not wired up yet for the Emscripten build
@@ -175,12 +175,12 @@ index 0000000000..5cdbe4efad
 +	*pitch = 0;
 +	*roll = 0;
 +}
-diff --git i/platform/web/vr_webxr.cpp w/platform/web/vr_webxr.cpp
+diff --git c/platform/web/vr_webxr.cpp i/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..e6a1eca72b
+index 0000000000..c0afd496a0
 --- /dev/null
-+++ w/platform/web/vr_webxr.cpp
-@@ -0,0 +1,180 @@
++++ i/platform/web/vr_webxr.cpp
+@@ -0,0 +1,343 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -197,16 +197,40 @@ index 0000000000..e6a1eca72b
 +#include "vr_webxr.h"
 +
 +#include <cmath>
-+#include <emscripten/emscripten.h>
-+
++#include <emscripten.h>
 +#include "r_utility.h"
 +#include "c_cvars.h"
 +#include "c_dispatch.h"
++#include "gl/renderer/gl_renderer.h"
++#include "gl/renderer/gl_renderbuffers.h"
 +
 +CVAR(Bool, vr_webxr_use_position, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 +EXTERN_CVAR(Float, vr_vunits_per_meter)
 +
 +namespace {
++
++// XRWebGLLayer.framebuffer is a JavaScript object. The browser stores it on
++// Module before calling the C ABI; this bridge gives it an Emscripten GL name
++// so ordinary glBindFramebuffer calls can target it. It must never be deleted
++// by C++ because XRWebGLLayer owns the underlying object.
++EM_JS(int, WebXR_RegisterLayerFramebuffer, (), {
++  const framebuffer = Module['webxrLayerFramebuffer'];
++  if (!framebuffer) return 0;
++  let handle = Module['webxrLayerFramebufferHandle'];
++  if (!handle) {
++    handle = GL.getNewId(GL.framebuffers);
++    Module['webxrLayerFramebufferHandle'] = handle;
++  }
++  GL.framebuffers[handle] = framebuffer;
++  return handle;
++});
++
++EM_JS(void, WebXR_ReleaseLayerFramebuffer, (), {
++  const handle = Module['webxrLayerFramebufferHandle'];
++  if (handle) GL.framebuffers[handle] = null;
++  Module['webxrLayerFramebuffer'] = null;
++  Module['webxrLayerFramebufferHandle'] = 0;
++});
 +
 +bool g_active = false;
 +bool g_haveYawZero = false;
@@ -217,11 +241,41 @@ index 0000000000..e6a1eca72b
 +double g_rollDeg = 0.0;
 +double g_heightMeters = 0.0;
 +
++struct WebXREyeState
++{
++	s3d::Viewport viewport = { 0, 0, 0, 0 };
++	float offset[3] = { 0.0f, 0.0f, 0.0f };
++	float projection[16] = {};
++	bool hasViewport = false;
++	bool hasOffset = false;
++	bool hasProjection = false;
++};
++
++GLuint g_xrFramebuffer = 0;
++WebXREyeState g_eyes[2];
++
++bool IsEyeIndexValid(int eye)
++{
++	return eye >= 0 && eye < 2;
++}
++
++bool IsEyeValid(int eye)
++{
++	const WebXREyeState& state = g_eyes[eye];
++	return state.hasViewport && state.hasOffset && state.hasProjection &&
++		state.viewport.width > 0 && state.viewport.height > 0;
++}
++
 +} // namespace
 +
 +bool WebXR_IsActive()
 +{
 +	return g_active;
++}
++
++bool WebXR_IsStereoReady()
++{
++	return g_active && g_xrFramebuffer != 0 && IsEyeValid(0) && IsEyeValid(1);
 +}
 +
 +extern "C" {
@@ -233,23 +287,16 @@ index 0000000000..e6a1eca72b
 +	if (!g_active)
 +	{
 +		g_yawDeg = g_pitchDeg = g_rollDeg = g_heightMeters = 0.0;
++		g_xrFramebuffer = 0;
++		WebXR_ReleaseLayerFramebuffer();
++		g_eyes[0] = WebXREyeState();
++		g_eyes[1] = WebXREyeState();
 +	}
 +
-+	// D_DoomLoop() (d_main.cpp) drives the whole engine via
-+	// emscripten_set_main_loop(..., 0, 1), which defaults to
-+	// EM_TIMING_RAF -- tied to the *window's* requestAnimationFrame. Once an
-+	// immersive WebXR session opens, browsers commonly stop delivering that
-+	// (the flat 2D canvas isn't what's being displayed anymore), which
-+	// silently freezes the entire game loop, not just rendering -- ticking,
-+	// input, everything. Switching to EM_TIMING_SETTIMEOUT keeps the loop
-+	// running on a wall-clock timer instead, independent of window rAF, for
-+	// as long as a session is open; switching back on exit restores normal
-+	// vsync-paced timing so desktop play isn't needlessly burning CPU on a
-+	// timer loop it doesn't need.
-+	if (g_active)
-+		emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 16);
-+	else
-+		emscripten_set_main_loop_timing(EM_TIMING_RAF, 0);
++	// XRWebGLLayer's framebuffer is valid only during the runtime's frame
++	// callback. d_main.cpp pauses its own browser callback while this is true;
++	// web/src/xr.ts then drives one engine frame from each XR rAF.
++	WebXR_SetFrameOwnership(g_active);
 +}
 +
 +// qx/qy/qz/qw: WebXR head orientation (XRRigidTransform.orientation) -- a
@@ -321,6 +368,63 @@ index 0000000000..e6a1eca72b
 +	g_heightMeters = py;
 +}
 +
++void VR_WebXR_RegisterFramebuffer(int framebuffer)
++{
++	(void)framebuffer;
++	g_xrFramebuffer = static_cast<GLuint>(WebXR_RegisterLayerFramebuffer());
++}
++
++void VR_WebXR_InvalidateFramebuffer()
++{
++	g_xrFramebuffer = 0;
++	WebXR_ReleaseLayerFramebuffer();
++}
++
++void VR_WebXR_SetEyeViewport(int eye, int x, int y, int width, int height)
++{
++	if (!IsEyeIndexValid(eye)) return;
++
++	WebXREyeState& state = g_eyes[eye];
++	state.viewport = { x, y, width, height };
++	state.hasViewport = width > 0 && height > 0;
++}
++
++void VR_WebXR_SetEyeOffset(int eye, float x, float y, float z)
++{
++	if (!IsEyeIndexValid(eye) || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return;
++
++	WebXREyeState& state = g_eyes[eye];
++	state.offset[0] = x;
++	state.offset[1] = y;
++	state.offset[2] = z;
++	state.hasOffset = true;
++}
++
++void VR_WebXR_SetEyeProjection(int eye,
++	float m00, float m01, float m02, float m03,
++	float m04, float m05, float m06, float m07,
++	float m08, float m09, float m10, float m11,
++	float m12, float m13, float m14, float m15)
++{
++	if (!IsEyeIndexValid(eye)) return;
++
++	const float projection[16] = {
++		m00, m01, m02, m03, m04, m05, m06, m07,
++		m08, m09, m10, m11, m12, m13, m14, m15
++	};
++	for (int i = 0; i < 16; ++i)
++	{
++		if (!std::isfinite(projection[i])) return;
++	}
++
++	WebXREyeState& state = g_eyes[eye];
++	for (int i = 0; i < 16; ++i)
++	{
++		state.projection[i] = projection[i];
++	}
++	state.hasProjection = true;
++}
++
 +void VR_WebXR_Recenter()
 +{
 +	g_haveYawZero = false;
@@ -335,7 +439,35 @@ index 0000000000..e6a1eca72b
 +
 +namespace s3d {
 +
++WebXRDeviceEyePose::WebXRDeviceEyePose(int eye)
++	: eye(eye)
++{
++}
++
++VSMatrix WebXRDeviceEyePose::GetProjection(float fov, float aspectRatio, float fovRatio) const
++{
++	VSMatrix projection;
++	projection.loadMatrix(g_eyes[eye].projection);
++	return projection;
++}
++
++void WebXRDeviceEyePose::GetViewShift(float yaw, float outViewShift[3]) const
++{
++	const WebXREyeState& state = g_eyes[eye];
++	const float yawRadians = DEG2RAD(yaw);
++	const float scale = vr_vunits_per_meter;
++	const float cosYaw = std::cos(yawRadians);
++	const float sinYaw = std::sin(yawRadians);
++
++	// WebXR is right-handed with -Z forward. Rotate its viewer-relative
++	// offset into Doom's horizontal yaw plane, then scale meters to map units.
++	outViewShift[0] = (-cosYaw * state.offset[0] - sinYaw * state.offset[2]) * scale;
++	outViewShift[1] = (sinYaw * state.offset[0] - cosYaw * state.offset[2]) * scale;
++	outViewShift[2] = state.offset[1] * scale;
++}
++
 +WebXRDeviceMode::WebXRDeviceMode()
++	: leftEye(0), rightEye(1)
 +{
 +	eye_ptrs.Push(&centralEye);
 +}
@@ -344,6 +476,22 @@ index 0000000000..e6a1eca72b
 +{
 +	static WebXRDeviceMode instance;
 +	return instance;
++}
++
++int WebXRDeviceMode::eye_count() const
++{
++	return WebXR_IsStereoReady() ? 2 : 1;
++}
++
++const EyePose *WebXRDeviceMode::getEyePose(int ix) const
++{
++	if (!WebXR_IsStereoReady()) return &centralEye;
++	return ix == 0 ? &leftEye : &rightEye;
++}
++
++bool WebXRDeviceMode::IsMono() const
++{
++	return !WebXR_IsStereoReady();
 +}
 +
 +void WebXRDeviceMode::SetUp() const
@@ -360,19 +508,31 @@ index 0000000000..e6a1eca72b
 +	}
 +}
 +
++void WebXRDeviceMode::Present() const
++{
++	if (!WebXR_IsStereoReady()) return;
++
++	glBindFramebuffer(GL_FRAMEBUFFER, g_xrFramebuffer);
++	for (int eye = 0; eye < 2; ++eye)
++	{
++		const Viewport& viewport = g_eyes[eye].viewport;
++		const GL_IRECT box = { viewport.x, viewport.y, viewport.width, viewport.height };
++		glScissor(box.left, box.top, box.width, box.height);
++		GLRenderer->mBuffers->BindEyeTexture(eye, 0);
++		GLRenderer->DrawPresentTexture(box, true);
++	}
++}
++
 +} // namespace s3d
-diff --git i/platform/web/vr_webxr.h w/platform/web/vr_webxr.h
+diff --git c/platform/web/vr_webxr.h i/platform/web/vr_webxr.h
 new file mode 100644
-index 0000000000..abcdba7379
+index 0000000000..66127750d3
 --- /dev/null
-+++ w/platform/web/vr_webxr.h
-@@ -0,0 +1,43 @@
-+// WebXR head-tracking bridge (M5 -- see docs/implementation-plan.md).
-+// The browser side (web/src/xr.ts) samples the XR frame's head pose every
-+// frame and forwards it here via the extern "C" functions declared in
-+// vr_webxr.cpp; this header only exposes the render-mode seam so
-+// gl_stereo_cvars.cpp can switch into WebXR mode without needing to know any
-+// of the conversion details.
++++ i/platform/web/vr_webxr.h
+@@ -0,0 +1,70 @@
++// WebXR head-tracking and stereo bridge. The browser passes only primitive
++// values through this C ABI; this code never needs WebXR JS types or the JS
++// heap.
 +#ifndef VR_WEBXR_H
 +#define VR_WEBXR_H
 +
@@ -381,39 +541,69 @@ index 0000000000..abcdba7379
 +// True once the browser has told the engine a WebXR session is active (see
 +// VR_WebXR_SetActive in vr_webxr.cpp).
 +bool WebXR_IsActive();
++bool WebXR_IsStereoReady();
++void WebXR_SetFrameOwnership(bool active);
++
++extern "C" {
++
++// framebuffer is an Emscripten WebGL framebuffer handle, not a WebXR JS
++// object. A non-positive value invalidates the current XR target.
++void VR_WebXR_RegisterFramebuffer(int framebuffer);
++void VR_WebXR_InvalidateFramebuffer();
++void VR_WebXR_SetEyeViewport(int eye, int x, int y, int width, int height);
++void VR_WebXR_SetEyeOffset(int eye, float x, float y, float z);
++void VR_WebXR_SetEyeProjection(int eye,
++	float m00, float m01, float m02, float m03,
++	float m04, float m05, float m06, float m07,
++	float m08, float m09, float m10, float m11,
++	float m12, float m13, float m14, float m15);
++int VR_WebXR_RunFrame();
++
++} // extern "C"
 +
 +namespace s3d {
 +
-+// M5 is head-tracking only: this renders mono, exactly like MonoView (one
-+// EyePose, empty Present()), but its SetUp() feeds real HMD orientation into
-+// r_viewpoint.Angles every frame. Stereo per-eye rendering
-+// (WebXRDeviceEyePose : ShiftedEyePose, mirroring OpenXRDeviceEyePose) is
-+// M6's job -- this class exists now so the pose data path and the
-+// Stereo3DMode::getCurrentMode() dispatch seam are both proven out ahead of
-+// that work, per the implementation plan's note that "mono rendering can
-+// read head pose through the same seam".
++class WebXRDeviceEyePose : public EyePose
++{
++public:
++	explicit WebXRDeviceEyePose(int eye);
++
++	VSMatrix GetProjection(float fov, float aspectRatio, float fovRatio) const override;
++	void GetViewShift(float yaw, float outViewShift[3]) const override;
++
++private:
++	int eye;
++};
++
++// The mode remains mono while the XR target or either eye description is
++// incomplete, preserving the M5 path until a complete M6 frame arrives.
 +class WebXRDeviceMode : public Stereo3DMode
 +{
 +public:
 +	static const Stereo3DMode& getInstance();
 +
++	int eye_count() const override;
++	const EyePose *getEyePose(int ix) const override;
++	bool IsMono() const override;
 +	void SetUp() const override;
-+	void Present() const override {}
++	void Present() const override;
 +
 +protected:
 +	WebXRDeviceMode();
 +
 +private:
 +	EyePose centralEye;
++	WebXRDeviceEyePose leftEye;
++	WebXRDeviceEyePose rightEye;
 +};
 +
 +} // namespace s3d
 +
 +#endif // VR_WEBXR_H
-diff --git i/src/CMakeLists.txt w/src/CMakeLists.txt
+diff --git c/src/CMakeLists.txt i/src/CMakeLists.txt
 index 7a25c4d807..1dd5254fbf 100644
---- i/src/CMakeLists.txt
-+++ w/src/CMakeLists.txt
+--- c/src/CMakeLists.txt
++++ i/src/CMakeLists.txt
 @@ -181,7 +181,26 @@ else()
  	endif()
  
@@ -472,10 +662,10 @@ index 7a25c4d807..1dd5254fbf 100644
  	${FASTMATH_SOURCES}
  	${PCH_SOURCES}
  	x86.cpp
-diff --git i/src/__autostart.cpp w/src/__autostart.cpp
+diff --git c/src/__autostart.cpp i/src/__autostart.cpp
 index 13e104d753..a8226c68c6 100644
---- i/src/__autostart.cpp
-+++ w/src/__autostart.cpp
+--- c/src/__autostart.cpp
++++ i/src/__autostart.cpp
 @@ -89,6 +89,21 @@ __declspec(allocate(".yreg$a")) void *const YRegHead = 0;
  
  #endif
@@ -498,10 +688,10 @@ index 13e104d753..a8226c68c6 100644
  #elif defined(__GNUC__)
  
  #include "doomtype.h"
-diff --git i/src/autosegs.h w/src/autosegs.h
+diff --git c/src/autosegs.h i/src/autosegs.h
 index 9cba04ad23..0c238879b7 100644
---- i/src/autosegs.h
-+++ w/src/autosegs.h
+--- c/src/autosegs.h
++++ i/src/autosegs.h
 @@ -49,6 +49,87 @@
  typedef void * const REGINFO;
  typedef void * NCREGINFO;
@@ -596,10 +786,10 @@ index 9cba04ad23..0c238879b7 100644
  #endif
 +
 +#endif
-diff --git i/src/cmdlib.cpp w/src/cmdlib.cpp
+diff --git c/src/cmdlib.cpp i/src/cmdlib.cpp
 index 3d66dfad84..4ce3bb5514 100644
---- i/src/cmdlib.cpp
-+++ w/src/cmdlib.cpp
+--- c/src/cmdlib.cpp
++++ i/src/cmdlib.cpp
 @@ -29,7 +29,7 @@
  #include <unistd.h>
  #include <sys/types.h>
@@ -609,22 +799,23 @@ index 3d66dfad84..4ce3bb5514 100644
  #include <fts.h>
  #endif
  #endif
-diff --git i/src/d_main.cpp w/src/d_main.cpp
-index df3bcda9df..d024120233 100644
---- i/src/d_main.cpp
-+++ w/src/d_main.cpp
-@@ -45,6 +45,10 @@
+diff --git c/src/d_main.cpp i/src/d_main.cpp
+index df3bcda9df..4b3c5e2e94 100644
+--- c/src/d_main.cpp
++++ i/src/d_main.cpp
+@@ -45,6 +45,11 @@
  #include <math.h>
  #include <assert.h>
  
 +#ifdef __EMSCRIPTEN__
 +#include <emscripten.h>
++#include "web/vr_webxr.h"
 +#endif
 +
  #include "doomerrors.h"
  
  #include "i_time.h"
-@@ -1077,10 +1081,92 @@ void D_ErrorCleanup ()
+@@ -1077,10 +1082,152 @@ void D_ErrorCleanup ()
  //
  //==========================================================================
  
@@ -702,13 +893,73 @@ index df3bcda9df..d024120233 100644
 +// For now, a restart request just stops the loop with a message instead of
 +// actually restarting; making restart work for real is follow-up work, not
 +// needed to get gameplay rendering.
++static bool g_emscriptenLoopInstalled = false;
++static bool g_webxrOwnsFrame = false;
++static bool g_emscriptenLoopPaused = false;
++static bool g_webxrFrameRunning = false;
++
++static void StopEmscriptenLoopForRestart()
++{
++	Printf(PRINT_HIGH, "Restart requested, but restart isn't supported in the web build yet -- stopping.\n");
++	emscripten_cancel_main_loop();
++	g_emscriptenLoopInstalled = false;
++	g_emscriptenLoopPaused = false;
++}
++
 +static void D_DoomLoopEmscriptenTic()
 +{
++	g_emscriptenLoopInstalled = true;
++	if (g_webxrOwnsFrame)
++	{
++		if (!g_emscriptenLoopPaused)
++		{
++			emscripten_pause_main_loop();
++			g_emscriptenLoopPaused = true;
++		}
++		return;
++	}
 +	if (!D_DoomLoopTic())
 +	{
-+		Printf(PRINT_HIGH, "Restart requested, but restart isn't supported in the web build yet -- stopping.\n");
-+		emscripten_cancel_main_loop();
++		StopEmscriptenLoopForRestart();
 +	}
++}
++
++void WebXR_SetFrameOwnership(bool active)
++{
++	g_webxrOwnsFrame = active;
++	if (!g_emscriptenLoopInstalled) return;
++
++	if (active && !g_emscriptenLoopPaused)
++	{
++		emscripten_pause_main_loop();
++		g_emscriptenLoopPaused = true;
++	}
++	else if (!active && g_emscriptenLoopPaused)
++	{
++		emscripten_resume_main_loop();
++		g_emscriptenLoopPaused = false;
++	}
++}
++
++extern "C" int VR_WebXR_RunFrame()
++{
++	if (!g_webxrOwnsFrame || !g_emscriptenLoopInstalled || g_webxrFrameRunning)
++		return 0;
++
++	// A frame can call into JS while rendering; do not allow a nested ccall to
++	// tick or render the world a second time.
++	struct FrameGuard
++	{
++		FrameGuard() { g_webxrFrameRunning = true; }
++		~FrameGuard() { g_webxrFrameRunning = false; }
++	} guard;
++
++	if (!D_DoomLoopTic())
++	{
++		StopEmscriptenLoopForRestart();
++		return 0;
++	}
++	return 1;
 +}
 +#endif
 +
@@ -719,7 +970,7 @@ index df3bcda9df..d024120233 100644
  	// Clamp the timer to TICRATE until the playloop has been entered.
  	r_NoInterpolate = true;
  	Page.SetInvalid();
-@@ -1089,65 +1175,19 @@ void D_DoomLoop ()
+@@ -1089,65 +1236,19 @@ void D_DoomLoop ()
  
  	vid_cursor.Callback();
  
@@ -795,7 +1046,7 @@ index df3bcda9df..d024120233 100644
  }
  
  //==========================================================================
-@@ -2595,7 +2635,7 @@ static int D_DoomMain_Internal (void)
+@@ -2595,7 +2696,7 @@ static int D_DoomMain_Internal (void)
  		}
  		nospriterename = false;
  
@@ -804,7 +1055,7 @@ index df3bcda9df..d024120233 100644
  		// the IWAD is known.
  
  		GetCmdLineFiles(pwads);
-@@ -3025,6 +3065,14 @@ int D_DoomMain()
+@@ -3025,6 +3126,14 @@ int D_DoomMain()
  	return ret;
  }
  
@@ -819,7 +1070,7 @@ index df3bcda9df..d024120233 100644
  // The command line arguments.
  FArgs *Args;
  
-@@ -3034,6 +3082,7 @@ void VR_DoomMain(int argc, char** argv)
+@@ -3034,6 +3143,7 @@ void VR_DoomMain(int argc, char** argv)
      Args = new FArgs(argc, argv);
      D_DoomMain ();
  }
@@ -827,10 +1078,10 @@ index df3bcda9df..d024120233 100644
  
  //==========================================================================
  //
-diff --git i/src/d_net.cpp w/src/d_net.cpp
+diff --git c/src/d_net.cpp i/src/d_net.cpp
 index 544822f6d3..781a6f176a 100644
---- i/src/d_net.cpp
-+++ w/src/d_net.cpp
+--- c/src/d_net.cpp
++++ i/src/d_net.cpp
 @@ -990,7 +990,7 @@ void NetUpdate (void)
  	// build new ticcmds for console player
  	for (i = 0; i < newtics; i++)
@@ -840,10 +1091,10 @@ index 544822f6d3..781a6f176a 100644
  		D_ProcessEvents ();
  		if (pauseext || (maketic - gametic) / ticdup >= BACKUPTICS/2-1)
  			break;			// can't hold any more
-diff --git i/src/dobject.h w/src/dobject.h
+diff --git c/src/dobject.h i/src/dobject.h
 index b57f75bedf..9a0bff7b03 100644
---- i/src/dobject.h
-+++ w/src/dobject.h
+--- c/src/dobject.h
++++ i/src/dobject.h
 @@ -39,6 +39,7 @@
  #include "doomtype.h"
  #include "i_system.h"
@@ -863,10 +1114,10 @@ index b57f75bedf..9a0bff7b03 100644
  #else
  #	define _DECLARE_TI(cls) ClassReg * const cls::RegistrationInfoPtr __attribute__((section(SECTION_CREG))) = &cls::RegistrationInfo;
  #endif
-diff --git i/src/g_level.h w/src/g_level.h
+diff --git c/src/g_level.h i/src/g_level.h
 index 48ba798f9e..8c30d73e4d 100644
---- i/src/g_level.h
-+++ w/src/g_level.h
+--- c/src/g_level.h
++++ i/src/g_level.h
 @@ -37,6 +37,7 @@
  #include "doomtype.h"
  #include "sc_man.h"
@@ -875,10 +1126,154 @@ index 48ba798f9e..8c30d73e4d 100644
  
  struct level_info_t;
  struct cluster_info_t;
-diff --git i/src/gl/stereo3d/gl_stereo_cvars.cpp w/src/gl/stereo3d/gl_stereo_cvars.cpp
+diff --git c/src/gl/data/gl_vertexbuffer.cpp i/src/gl/data/gl_vertexbuffer.cpp
+index 94e16542b5..1c436e51ad 100644
+--- c/src/gl/data/gl_vertexbuffer.cpp
++++ i/src/gl/data/gl_vertexbuffer.cpp
+@@ -147,7 +147,14 @@ FFlatVertexBuffer::FFlatVertexBuffer(int width, int height)
+ 		unsigned int bytesize = gl_buffer_size * sizeof(FFlatVertex);
+ 		glBindBuffer(GL_ARRAY_BUFFER, vbo_id);
+ 		glBufferData(GL_ARRAY_BUFFER, bytesize, NULL, GL_STREAM_DRAW);
++		// WebGL2 has no glMapBufferRange. Keep a CPU-side staging buffer and
++		// upload it on Unmap instead; this is intentionally conservative until
++		// M10 can profile a narrower upload range on Quest hardware.
++#ifdef __EMSCRIPTEN__
++		map = new FFlatVertex[gl_buffer_size];
++#else
+ 		map = nullptr;
++#endif
+ 		DPrintf(DMSG_NOTIFY, "Using deferred buffer\n");
+ 		break;
+ 	}
+@@ -206,10 +213,16 @@ FFlatVertexBuffer::~FFlatVertexBuffer()
+ 	if (vbo_id != 0)
+ 	{
+ 		glBindBuffer(GL_ARRAY_BUFFER, vbo_id);
++	#ifndef __EMSCRIPTEN__
+ 		glUnmapBuffer(GL_ARRAY_BUFFER);
++	#endif
+ 		glBindBuffer(GL_ARRAY_BUFFER, 0);
+ 	}
+-	if (gl.legacyMode)
++	if (gl.legacyMode
++#ifdef __EMSCRIPTEN__
++		|| gl.buffermethod == BM_DEFERRED
++#endif
++	)
+ 	{
+ 		delete[] map;
+ 	}
+@@ -255,6 +268,9 @@ void FFlatVertexBuffer::Map()
+ {
+ 	if (gl.buffermethod == BM_DEFERRED)
+ 	{
++	#ifdef __EMSCRIPTEN__
++		return;
++	#else
+ 		unsigned int bytesize = gl_buffer_size * sizeof(FFlatVertex);
+ 		glBindBuffer(GL_ARRAY_BUFFER, vbo_id);
+ 		gl_RenderState.ResetVertexBuffer();
+@@ -264,6 +280,7 @@ void FFlatVertexBuffer::Map()
+ 			GLenum err = glGetError();
+ 			Printf("ERROR: glMapBufferRange failed to map with error %X - crash imminent!\n", (int)err);
+ 		}
++	#endif
+ 	}
+ }
+ 
+@@ -274,12 +291,16 @@ void FFlatVertexBuffer::Unmap()
+ 		unsigned int bytesize = gl_buffer_size * sizeof(FFlatVertex);
+ 		glBindBuffer(GL_ARRAY_BUFFER, vbo_id);
+ 		gl_RenderState.ResetVertexBuffer();
++	#ifdef __EMSCRIPTEN__
++		glBufferSubData(GL_ARRAY_BUFFER, 0, bytesize, map);
++	#else
+ 		if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE)
+-        {
+-            GLenum err = glGetError();
+-            Printf("ERROR: glUnmapBuffer failed to unmap with error %X\n", (int)err);
+-        }
++		{
++			GLenum err = glGetError();
++			Printf("ERROR: glUnmapBuffer failed to unmap with error %X\n", (int)err);
++		}
+ 		map = nullptr;
++	#endif
+ 	}
+ }
+ 
+@@ -500,4 +521,4 @@ void FFlatVertexBuffer::CheckUpdate(sector_t *sector)
+ 	if (hs != NULL) CheckPlanes(hs);
+ 	for (unsigned i = 0; i < sector->e->XFloor.ffloors.Size(); i++)
+ 		CheckPlanes(sector->e->XFloor.ffloors[i]->model);
+-}
+\ No newline at end of file
++}
+diff --git c/src/gl/dynlights/gl_lightbuffer.cpp i/src/gl/dynlights/gl_lightbuffer.cpp
+index f9a375b576..34b63d8342 100644
+--- c/src/gl/dynlights/gl_lightbuffer.cpp
++++ i/src/gl/dynlights/gl_lightbuffer.cpp
+@@ -55,7 +55,12 @@ FLightBuffer::FLightBuffer()
+ 	// Hack alert: On Intel's GL driver SSBO's perform quite worse than UBOs.
+ 	// We only want to disable using SSBOs for lights but not disable the feature entirely.
+ 	// Note that using an uniform buffer here will limit the number of lights per surface so it isn't done for NVidia and AMD.
+-	if (gl.flags & RFL_SHADER_STORAGE_BUFFER && !strstr(gl.vendorstring, "Intel"))
++	bool supportsShaderStorage = (gl.flags & RFL_SHADER_STORAGE_BUFFER) && !strstr(gl.vendorstring, "Intel");
++#ifdef __EMSCRIPTEN__
++	// WebGL2 has no SSBOs; use the existing UBO fallback instead.
++	supportsShaderStorage = false;
++#endif
++	if (supportsShaderStorage)
+ 	{
+ 		mBufferType = GL_SHADER_STORAGE_BUFFER;
+ 		mBlockAlign = 0;
+@@ -195,5 +200,3 @@ void FLightBuffer::BindBase()
+ 	mLastMappedIndex = UINT_MAX;
+ }
+ 
+-
+-
+diff --git c/src/gl/renderer/gl_renderbuffers.cpp i/src/gl/renderer/gl_renderbuffers.cpp
+index 511c0dbdd0..5c3e15418e 100644
+--- c/src/gl/renderer/gl_renderbuffers.cpp
++++ i/src/gl/renderer/gl_renderbuffers.cpp
+@@ -659,10 +659,10 @@ void FGLRenderBuffers::ClearFrameBuffer(bool stencil, bool depth)
+ 	GLdouble depthValue;
+ 	glGetBooleanv(GL_SCISSOR_TEST, &scissorEnabled);
+ 	glGetIntegerv(GL_STENCIL_CLEAR_VALUE, &stencilValue);
+-#ifdef __MOBILE__
+-    GLfloat t;
+-    glGetFloatv(GL_DEPTH_CLEAR_VALUE, &t);
+-    depthValue = t;
++#if defined(__MOBILE__) || defined(__EMSCRIPTEN__)
++	GLfloat t;
++	glGetFloatv(GL_DEPTH_CLEAR_VALUE, &t);
++	depthValue = t;
+ #else
+ 	glGetDoublev(GL_DEPTH_CLEAR_VALUE, &depthValue);
+ #endif
+diff --git c/src/gl/shaders/gl_shaderprogram.cpp i/src/gl/shaders/gl_shaderprogram.cpp
+index 0929d373a0..447b16e424 100644
+--- c/src/gl/shaders/gl_shaderprogram.cpp
++++ i/src/gl/shaders/gl_shaderprogram.cpp
+@@ -141,7 +141,7 @@ void FShaderProgram::CompileShader(ShaderType type)
+ 
+ void FShaderProgram::SetFragDataLocation(int index, const char *name)
+ {
+-#ifndef __MOBILE__
++#if !defined(__MOBILE__) && !defined(__EMSCRIPTEN__)
+ 	glBindFragDataLocation(mProgram, index, name);
+ #endif
+ }
+@@ -299,4 +299,3 @@ FString FShaderProgram::PatchShader(ShaderType type, const FString &code, const
+ // GLSL 1.2 keywords and identifiers
+ //
+ //==========================================================================
+-
+diff --git c/src/gl/stereo3d/gl_stereo_cvars.cpp i/src/gl/stereo3d/gl_stereo_cvars.cpp
 index 1b0277a845..1c0c5a4501 100644
---- i/src/gl/stereo3d/gl_stereo_cvars.cpp
-+++ w/src/gl/stereo3d/gl_stereo_cvars.cpp
+--- c/src/gl/stereo3d/gl_stereo_cvars.cpp
++++ i/src/gl/stereo3d/gl_stereo_cvars.cpp
 @@ -36,6 +36,10 @@
  #include "menu/menu.h"
  #include "version.h"
@@ -920,10 +1315,43 @@ index 1b0277a845..1c0c5a4501 100644
  	return *currentStereo3DMode;
  }
  
-diff --git i/src/gl/system/gl_framebuffer.h w/src/gl/system/gl_framebuffer.h
+diff --git c/src/gl/system/gl_framebuffer.cpp i/src/gl/system/gl_framebuffer.cpp
+index 76a25cc323..b1cc3b8dd7 100644
+--- c/src/gl/system/gl_framebuffer.cpp
++++ i/src/gl/system/gl_framebuffer.cpp
+@@ -147,16 +147,16 @@ void OpenGLFrameBuffer::InitializeState()
+ 	glEnable(GL_DITHER);
+ 	glDisable(GL_CULL_FACE);
+ 	glDisable(GL_POLYGON_OFFSET_FILL);
+-#ifndef __MOBILE__
++#if !defined(__MOBILE__) && !defined(__EMSCRIPTEN__)
+ 	glEnable(GL_POLYGON_OFFSET_LINE);
+ #endif
+ 	glEnable(GL_BLEND);
+-#ifndef __MOBILE__
++#if !defined(__MOBILE__) && !defined(__EMSCRIPTEN__)
+ 	glEnable(GL_DEPTH_CLAMP);
+ #endif
+ 	glDisable(GL_DEPTH_TEST);
+ 	if (gl.legacyMode) glEnable(GL_TEXTURE_2D);
+-#ifndef __MOBILE__
++#if !defined(__MOBILE__) && !defined(__EMSCRIPTEN__)
+ 	glDisable(GL_LINE_SMOOTH);
+ #endif
+ 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+@@ -398,7 +398,7 @@ bool OpenGLFrameBuffer::Begin2D(bool copy3d)
+ 
+ 	glDisable(GL_DEPTH_TEST);
+ 
+-#ifndef __MOBILE__
++#if !defined(__MOBILE__) && !defined(__EMSCRIPTEN__)
+ 	// Korshun: ENABLE AUTOMAP ANTIALIASING!!!
+ 	if (gl_aalines)
+ 		glEnable(GL_LINE_SMOOTH);
+diff --git c/src/gl/system/gl_framebuffer.h i/src/gl/system/gl_framebuffer.h
 index 242dd593e3..2c5fc9c054 100644
---- i/src/gl/system/gl_framebuffer.h
-+++ w/src/gl/system/gl_framebuffer.h
+--- c/src/gl/system/gl_framebuffer.h
++++ i/src/gl/system/gl_framebuffer.h
 @@ -4,7 +4,13 @@
  #ifdef _WIN32
  #include "win32gliface.h"
@@ -963,24 +1391,66 @@ index 242dd593e3..2c5fc9c054 100644
  
  	bool HWGammaActive = false;			// Are we using hardware or software gamma?
  	std::shared_ptr<FGLDebug> mDebug;	// Debug API
-diff --git i/src/gl/system/gl_load.c w/src/gl/system/gl_load.c
-index cbdef1f56f..daec8af554 100644
---- i/src/gl/system/gl_load.c
-+++ w/src/gl/system/gl_load.c
-@@ -108,7 +108,32 @@ static void *MOBILE_GetProcAddress(const char* name)
+diff --git c/src/gl/system/gl_interface.cpp i/src/gl/system/gl_interface.cpp
+index 727bad558d..5337a498fa 100644
+--- c/src/gl/system/gl_interface.cpp
++++ i/src/gl/system/gl_interface.cpp
+@@ -194,8 +194,12 @@ void gl_LoadExtensions()
+ 		gl.lightmethod = LM_DEFERRED;
+ 		gl.buffermethod = BM_DEFERRED;
+ 		gl.flags |= RFL_NO_CLIP_PLANES;
++		// WebGL2 has no shader storage buffer objects. The UBO path is slower
++		// but is the supported GLES3 fallback and keeps dynamic lights working.
++#ifndef __EMSCRIPTEN__
+ 		if (gl_light_buffer_type == 1)
+ 			gl.flags |= RFL_SHADER_STORAGE_BUFFER;
++#endif
+ 	}
+ 	else
+ 	{
+@@ -410,4 +414,4 @@ std::pair<double, bool> gl_getInfo()
+ 	// gl_ARB_bindless_texture is the closest we can get to determine Vulkan support from OpenGL.
+ 	// This isn't foolproof because Intel doesn't support it but for NVidia and AMD support of this extension means Vulkan support.
+ 	return std::make_pair(realglversion, CheckExtension("GL_ARB_bindless_texture"));
+-}
+\ No newline at end of file
++}
+diff --git c/src/gl/system/gl_load.c i/src/gl/system/gl_load.c
+index cbdef1f56f..93a058d00d 100644
+--- c/src/gl/system/gl_load.c
++++ i/src/gl/system/gl_load.c
+@@ -108,7 +108,50 @@ static void *MOBILE_GetProcAddress(const char* name)
  
  #endif
  
 +#if defined(__EMSCRIPTEN__)
-+/* WebGL2/GLES3 has no equivalent of these desktop-GL4-era extensions
-+ * (ARB_buffer_storage, ARB_shader_storage_buffer_object, etc. -- see
-+ * docs/questzdoom-architecture.md); report every one of them as absent
-+ * exactly like a real GL implementation lacking the extension would,
-+ * rather than pulling in an EGL/GLX-style loader that has nothing to load. */
++#include <emscripten/html5_webgl.h>
++// Emscripten exposes the desktop-signature compatibility entry points, but
++// its proc-address table intentionally contains only the GLES spellings
++// (glClearDepthf/glDepthRangef). The generated loader below asks for the
++// desktop names, so retain typed direct references for those two aliases.
++extern void emscripten_glClearDepth(GLdouble depth);
++extern void emscripten_glDepthRange(GLdouble nearValue, GLdouble farValue);
++/* M6: this used to unconditionally return NULL for every name, which was
++ * only correct for the WebGL2/GLES3-era-desktop-GL4 extensions this loader
++ * also tries to load (ARB_buffer_storage, ARB_shader_storage_buffer_object,
++ * etc. -- see docs/questzdoom-architecture.md) -- those really are absent
++ * under WebGL2 and should report as such. But the same stub also caught
++ * every *core* GLES3 function this loader requests (glDrawArrays, glClear,
++ * ...), which are NOT optional and DO exist -- Emscripten just doesn't need
++ * an EGL/GLX-style dynamic loader for those since they're already directly
++ * linkable C functions. emscripten_webgl_get_proc_address() is Emscripten's
++ * real, built-in name->pointer resolver (backed by GL_ENABLE_GET_PROC_ADDRESS,
++ * on by default) -- it returns a valid pointer for anything the current
++ * WebGL context actually supports and NULL otherwise, which is exactly the
++ * semantics ogl_LoadFunctions() below expects. */
 +static void *Emscripten_GetProcAddress(const char *name)
 +{
-+	(void)name;
-+	return NULL;
++	if (strcmp(name, "glClearDepth") == 0)
++		return (void *)emscripten_glClearDepth;
++	if (strcmp(name, "glDepthRange") == 0)
++		return (void *)emscripten_glDepthRange;
++	return emscripten_webgl_get_proc_address(name);
 +}
 +#endif
 +
@@ -1000,11 +1470,26 @@ index cbdef1f56f..daec8af554 100644
  
  int ogl_ext_ARB_buffer_storage = ogl_LOAD_FAILED;
  int ogl_ext_ARB_shader_storage_buffer_object = ogl_LOAD_FAILED;
-diff --git i/src/gl/system/gl_swframebuffer.cpp w/src/gl/system/gl_swframebuffer.cpp
-index 94db83f032..f8cbd5fa29 100644
---- i/src/gl/system/gl_swframebuffer.cpp
-+++ w/src/gl/system/gl_swframebuffer.cpp
-@@ -1609,7 +1609,10 @@ void OpenGLSWFrameBuffer::UpdatePalette()
+@@ -3501,4 +3544,3 @@ int ogl_IsVersionGEQ(int majorVersion, int minorVersion)
+ 	if(minorVersion <= g_minor_version) return 1;
+ 	return 0;
+ }
+-
+diff --git c/src/gl/system/gl_swframebuffer.cpp i/src/gl/system/gl_swframebuffer.cpp
+index 94db83f032..e5a0b9991f 100644
+--- c/src/gl/system/gl_swframebuffer.cpp
++++ i/src/gl/system/gl_swframebuffer.cpp
+@@ -404,7 +404,9 @@ std::unique_ptr<OpenGLSWFrameBuffer::HWPixelShader> OpenGLSWFrameBuffer::CreateP
+ 
+ 	glAttachShader(shader->Program, shader->VertexShader);
+ 	glAttachShader(shader->Program, shader->FragmentShader);
++#if !defined(__EMSCRIPTEN__)
+ 	glBindFragDataLocation(shader->Program, 0, "FragColor");
++#endif
+ 	glBindAttribLocation(shader->Program, 0, "AttrPosition");
+ 	glBindAttribLocation(shader->Program, 1, "AttrColor0");
+ 	glBindAttribLocation(shader->Program, 2, "AttrColor1");
+@@ -1609,7 +1611,10 @@ void OpenGLSWFrameBuffer::UpdatePalette()
  
  bool OpenGLSWFrameBuffer::SetGamma(float gamma)
  {
@@ -1016,10 +1501,10 @@ index 94db83f032..f8cbd5fa29 100644
  	NeedGammaUpdate = true;
  	return true;
  }
-diff --git i/src/gl/system/gl_swframebuffer.h w/src/gl/system/gl_swframebuffer.h
+diff --git c/src/gl/system/gl_swframebuffer.h i/src/gl/system/gl_swframebuffer.h
 index 007688ea0d..e92ee4d303 100644
---- i/src/gl/system/gl_swframebuffer.h
-+++ w/src/gl/system/gl_swframebuffer.h
+--- c/src/gl/system/gl_swframebuffer.h
++++ i/src/gl/system/gl_swframebuffer.h
 @@ -18,10 +18,13 @@ class OpenGLSWFrameBuffer : public Win32GLFrameBuffer
  {
  	typedef Win32GLFrameBuffer Super;
@@ -1037,10 +1522,10 @@ index 007688ea0d..e92ee4d303 100644
  #endif
  
  
-diff --git i/src/gl/system/gl_system.h w/src/gl/system/gl_system.h
+diff --git c/src/gl/system/gl_system.h i/src/gl/system/gl_system.h
 index a5e3dab2f1..2aa55ade5b 100644
---- i/src/gl/system/gl_system.h
-+++ w/src/gl/system/gl_system.h
+--- c/src/gl/system/gl_system.h
++++ i/src/gl/system/gl_system.h
 @@ -41,6 +41,13 @@
  
  #ifdef __MOBILE__
@@ -1055,10 +1540,10 @@ index a5e3dab2f1..2aa55ade5b 100644
  #endif
  
  #ifdef _MSC_VER
-diff --git i/src/menu/menudef.cpp w/src/menu/menudef.cpp
+diff --git c/src/menu/menudef.cpp i/src/menu/menudef.cpp
 index 9b20e5ac37..17d4add692 100644
---- i/src/menu/menudef.cpp
-+++ w/src/menu/menudef.cpp
+--- c/src/menu/menudef.cpp
++++ i/src/menu/menudef.cpp
 @@ -1629,8 +1629,10 @@ void M_CreateMenus()
  	{
  		I_BuildMIDIMenuList(*opt);
@@ -1079,10 +1564,10 @@ index 9b20e5ac37..17d4add692 100644
  	opt = OptionValues.CheckKey(NAME_PlayerTeam);
  	if (opt != nullptr)
  	{
-diff --git i/src/posix/i_system.h w/src/posix/i_system.h
+diff --git c/src/posix/i_system.h i/src/posix/i_system.h
 index 32693f0edb..dc7c33cb45 100644
---- i/src/posix/i_system.h
-+++ w/src/posix/i_system.h
+--- c/src/posix/i_system.h
++++ i/src/posix/i_system.h
 @@ -142,6 +142,10 @@ inline const char *I_FindName(findstate_t *fileinfo)
  #define FA_DIREC	8
  #define FA_ARCH		16
@@ -1101,10 +1586,10 @@ index 32693f0edb..dc7c33cb45 100644
 +#endif
  
  #endif
-diff --git i/src/posix/sdl/hardware.cpp w/src/posix/sdl/hardware.cpp
+diff --git c/src/posix/sdl/hardware.cpp i/src/posix/sdl/hardware.cpp
 index 753434fec1..c93b0fada3 100644
---- i/src/posix/sdl/hardware.cpp
-+++ w/src/posix/sdl/hardware.cpp
+--- c/src/posix/sdl/hardware.cpp
++++ i/src/posix/sdl/hardware.cpp
 @@ -246,7 +246,7 @@ void I_ClosestResolution (int *width, int *height, int bits)
  EXTERN_CVAR(Int, vid_maxfps);
  EXTERN_CVAR(Bool, cl_capfps);
@@ -1114,10 +1599,10 @@ index 753434fec1..c93b0fada3 100644
  Semaphore FPSLimitSemaphore;
  
  static void FPSLimitNotify(sigval val)
-diff --git i/src/posix/sdl/i_input.cpp w/src/posix/sdl/i_input.cpp
+diff --git c/src/posix/sdl/i_input.cpp i/src/posix/sdl/i_input.cpp
 index bdf15e18ae..2ecedab51c 100644
---- i/src/posix/sdl/i_input.cpp
-+++ w/src/posix/sdl/i_input.cpp
+--- c/src/posix/sdl/i_input.cpp
++++ i/src/posix/sdl/i_input.cpp
 @@ -563,7 +563,7 @@ void MessagePump (const SDL_Event &sev)
  void I_GetEvent ()
  {
@@ -1127,10 +1612,10 @@ index bdf15e18ae..2ecedab51c 100644
  	while (SDL_PollEvent (&sev))
  	{
  		MessagePump (sev);
-diff --git i/src/posix/sdl/i_main.cpp w/src/posix/sdl/i_main.cpp
+diff --git c/src/posix/sdl/i_main.cpp i/src/posix/sdl/i_main.cpp
 index 00fa15497b..a31c034a6f 100644
---- i/src/posix/sdl/i_main.cpp
-+++ w/src/posix/sdl/i_main.cpp
+--- c/src/posix/sdl/i_main.cpp
++++ i/src/posix/sdl/i_main.cpp
 @@ -170,6 +170,10 @@ int main_android (int argc, char **argv)
  int main (int argc, char **argv)
  {
@@ -1142,10 +1627,10 @@ index 00fa15497b..a31c034a6f 100644
  #if !defined (__APPLE__) && !defined (__ANDROID__)
  	{
  		int s[4] = { SIGSEGV, SIGILL, SIGFPE, SIGBUS };
-diff --git i/src/posix/sdl/i_system.cpp w/src/posix/sdl/i_system.cpp
+diff --git c/src/posix/sdl/i_system.cpp i/src/posix/sdl/i_system.cpp
 index 27a32076d4..352fcc129e 100644
---- i/src/posix/sdl/i_system.cpp
-+++ w/src/posix/sdl/i_system.cpp
+--- c/src/posix/sdl/i_system.cpp
++++ i/src/posix/sdl/i_system.cpp
 @@ -110,6 +110,11 @@ void I_ShowFatalError(const char *message)
  	Mac_I_FatalError(message);
  #elif defined __linux__
@@ -1158,11 +1643,26 @@ index 27a32076d4..352fcc129e 100644
  #else
  	// ???
  #endif
-diff --git i/src/posix/sdl/sdlglvideo.cpp w/src/posix/sdl/sdlglvideo.cpp
-index 50f9f10edf..581dfed456 100644
---- i/src/posix/sdl/sdlglvideo.cpp
-+++ w/src/posix/sdl/sdlglvideo.cpp
-@@ -531,7 +531,7 @@ void SDLGLFB::NewRefreshRate ()
+diff --git c/src/posix/sdl/sdlglvideo.cpp i/src/posix/sdl/sdlglvideo.cpp
+index 50f9f10edf..26f4159526 100644
+--- c/src/posix/sdl/sdlglvideo.cpp
++++ i/src/posix/sdl/sdlglvideo.cpp
+@@ -339,6 +339,14 @@ void SDLGLVideo::SetupPixelFormat(bool allowsoftware, int multisample, const int
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major);
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, min);
+ 	return;
++#elif defined(__EMSCRIPTEN__)
++	// WebGL2 exposes GLES 3.0, not a desktop GL core or compatibility
++	// profile. Request it directly instead of falling through to the desktop
++	// version retry ladder below.
++	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
++	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
++	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
++	return;
+ #endif
+ 
+ 	if (gl_es)
+@@ -531,7 +539,7 @@ void SDLGLFB::NewRefreshRate ()
  
  void SDLGLFB::SwapBuffers()
  {
@@ -1171,11 +1671,11 @@ index 50f9f10edf..581dfed456 100644
  	if (vid_maxfps && !cl_capfps)
  	{
  		SEMAPHORE_WAIT(FPSLimitSemaphore)
-diff --git i/src/posix/sdl/sdlglvideo.h w/src/posix/sdl/sdlglvideo.h
+diff --git c/src/posix/sdl/sdlglvideo.h i/src/posix/sdl/sdlglvideo.h
 new file mode 100644
 index 0000000000..798131e285
 --- /dev/null
-+++ w/src/posix/sdl/sdlglvideo.h
++++ i/src/posix/sdl/sdlglvideo.h
 @@ -0,0 +1,150 @@
 +#ifndef __SDLGLVIDEO_H__
 +#define __SDLGLVIDEO_H__
@@ -1327,10 +1827,10 @@ index 0000000000..798131e285
 +};
 +
 +#endif
-diff --git i/src/posix/sdl/sdlvideo.cpp w/src/posix/sdl/sdlvideo.cpp
+diff --git c/src/posix/sdl/sdlvideo.cpp i/src/posix/sdl/sdlvideo.cpp
 index 5eb8a7bf36..eed8bc40c6 100644
---- i/src/posix/sdl/sdlvideo.cpp
-+++ w/src/posix/sdl/sdlvideo.cpp
+--- c/src/posix/sdl/sdlvideo.cpp
++++ i/src/posix/sdl/sdlvideo.cpp
 @@ -231,7 +231,7 @@ void SDLFB::Update ()
  
  	DrawRateStuff ();
@@ -1355,19 +1855,19 @@ index 5eb8a7bf36..eed8bc40c6 100644
  	NeedGammaUpdate = true;
  	return true;
  }
-diff --git i/src/posix/sdl/sdlvideo.h w/src/posix/sdl/sdlvideo.h
+diff --git c/src/posix/sdl/sdlvideo.h i/src/posix/sdl/sdlvideo.h
 new file mode 100644
 index 0000000000..2129f5a622
 --- /dev/null
-+++ w/src/posix/sdl/sdlvideo.h
++++ i/src/posix/sdl/sdlvideo.h
 @@ -0,0 +1,3 @@
 +#include "hardware.h"
 +#include "v_video.h"
 +#include "sdlglvideo.h"
-diff --git i/src/scripting/thingdef.h w/src/scripting/thingdef.h
+diff --git c/src/scripting/thingdef.h i/src/scripting/thingdef.h
 index 63b65b2bb1..dcf29cbdf8 100644
---- i/src/scripting/thingdef.h
-+++ w/src/scripting/thingdef.h
+--- c/src/scripting/thingdef.h
++++ i/src/scripting/thingdef.h
 @@ -43,6 +43,7 @@
  #define __THINGDEF_H
  
@@ -1419,10 +1919,10 @@ index 63b65b2bb1..dcf29cbdf8 100644
  	static void Handler_##name##_##paramlist##_##clas(AActor *defaults, PClassActor *info, Baggage &bag, FPropParam *params)
  
  
-diff --git i/src/scripting/vm/vm.h w/src/scripting/vm/vm.h
+diff --git c/src/scripting/vm/vm.h i/src/scripting/vm/vm.h
 index db55dce43c..4ac2252d1e 100644
---- i/src/scripting/vm/vm.h
-+++ w/src/scripting/vm/vm.h
+--- c/src/scripting/vm/vm.h
++++ i/src/scripting/vm/vm.h
 @@ -624,11 +624,24 @@ struct AFuncDesc
  #define MSVC_FSEG __declspec(allocate(".freg$u"))
  #define GCC_ASEG
@@ -1538,10 +2038,10 @@ index db55dce43c..4ac2252d1e 100644
  
  
  class AActor;
-diff --git i/src/sound/backend/oalsound.cpp w/src/sound/backend/oalsound.cpp
+diff --git c/src/sound/backend/oalsound.cpp i/src/sound/backend/oalsound.cpp
 index a2bd511ac2..e2767eb12a 100644
---- i/src/sound/backend/oalsound.cpp
-+++ w/src/sound/backend/oalsound.cpp
+--- c/src/sound/backend/oalsound.cpp
++++ i/src/sound/backend/oalsound.cpp
 @@ -680,11 +680,19 @@ OpenALSoundRenderer::OpenALSoundRenderer()
  	// meaningful values for ALC_MONO_SOURCES and ALC_MONO_SOURCES.
  	// At least Apple's OpenAL implementation returns zeroes,
@@ -1595,10 +2095,10 @@ index a2bd511ac2..e2767eb12a 100644
  	OpenALSoundStream *stream = new OpenALSoundStream(this);
  	if (!stream->Init(callback, buffbytes, flags, samplerate, userdata))
  	{
-diff --git i/src/swrenderer/drawers/r_thread.cpp w/src/swrenderer/drawers/r_thread.cpp
+diff --git c/src/swrenderer/drawers/r_thread.cpp i/src/swrenderer/drawers/r_thread.cpp
 index 5e8e2cfc1e..6edd0d7e68 100644
---- i/src/swrenderer/drawers/r_thread.cpp
-+++ w/src/swrenderer/drawers/r_thread.cpp
+--- c/src/swrenderer/drawers/r_thread.cpp
++++ i/src/swrenderer/drawers/r_thread.cpp
 @@ -39,7 +39,14 @@
  void PeekThreadedErrorPane();
  #endif
@@ -1614,10 +2114,10 @@ index 5e8e2cfc1e..6edd0d7e68 100644
  CVAR(Int, r_debug_draw, 0, 0);
  
  /////////////////////////////////////////////////////////////////////////////
-diff --git i/src/version.h w/src/version.h
+diff --git c/src/version.h i/src/version.h
 index 220ce7c3d7..6f92463e16 100644
---- i/src/version.h
-+++ w/src/version.h
+--- c/src/version.h
++++ i/src/version.h
 @@ -92,7 +92,12 @@ const char *GetVersionString();
  #define OPTIONALWAD "res/lz_game_support.pk3"
  #else
@@ -1632,10 +2132,10 @@ index 220ce7c3d7..6f92463e16 100644
  #endif
  
  
-diff --git i/src/zzautozend.cpp w/src/zzautozend.cpp
+diff --git c/src/zzautozend.cpp i/src/zzautozend.cpp
 index 18c020310c..502e3f1ee6 100644
---- i/src/zzautozend.cpp
-+++ w/src/zzautozend.cpp
+--- c/src/zzautozend.cpp
++++ i/src/zzautozend.cpp
 @@ -53,6 +53,16 @@ __declspec(allocate(".greg$z")) void *const GRegTail = 0;
  __declspec(allocate(".yreg$z")) void *const YRegTail = 0;
  
@@ -1653,10 +2153,10 @@ index 18c020310c..502e3f1ee6 100644
  #elif defined(__GNUC__)
  
  #include "doomtype.h"
-diff --git i/tools/lemon/CMakeLists.txt w/tools/lemon/CMakeLists.txt
+diff --git c/tools/lemon/CMakeLists.txt i/tools/lemon/CMakeLists.txt
 index 71418eda5a..e4ffa8b0c6 100644
---- i/tools/lemon/CMakeLists.txt
-+++ w/tools/lemon/CMakeLists.txt
+--- c/tools/lemon/CMakeLists.txt
++++ i/tools/lemon/CMakeLists.txt
 @@ -6,6 +6,14 @@ if( NOT CMAKE_CROSSCOMPILING )
  	add_executable( lemon lemon.c )
  	set( CROSS_EXPORTS ${CROSS_EXPORTS} lemon PARENT_SCOPE )
@@ -1672,10 +2172,10 @@ index 71418eda5a..e4ffa8b0c6 100644
  	# Lemon wants lempar.c in its directory
  	add_custom_command( TARGET lemon
  		POST_BUILD
-diff --git i/wadsrc/static/defbind1.txt w/wadsrc/static/defbind1.txt
+diff --git c/wadsrc/static/defbind1.txt i/wadsrc/static/defbind1.txt
 index 7e4fa29b7c..dbf45ee12b 100644
---- i/wadsrc/static/defbind1.txt
-+++ w/wadsrc/static/defbind1.txt
+--- c/wadsrc/static/defbind1.txt
++++ i/wadsrc/static/defbind1.txt
 @@ -1 +1,11 @@
  /* Default keybindings for all games */
 +

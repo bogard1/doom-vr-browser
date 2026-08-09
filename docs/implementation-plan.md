@@ -830,9 +830,9 @@ next step.
 `Stereo3DMode`/`EyePose` seam (architecture doc §5), consuming per-eye pose/
 projection/viewport from `XRFrame.getViewerPose(...).views`.
 
-**Affected components**: `src/gl/stereo3d/gl_webxrdevice.cpp`/`.h` (new,
-modeled on `gl_openxrdevice.cpp`/`.h`), GL renderer fixes carried over from
-M1 (GL4→WebGL2 shader/buffer rework, if not already fully resolved).
+**Affected components**: `platform/web/vr_webxr.cpp`/`.h`, `src/d_main.cpp`,
+the hardware GL renderer, `web/src/engine.ts`, `web/src/main.ts`, and
+`web/src/xr.ts`.
 
 **Expected technical problems**:
 - This is where any GL4/WebGL2 gaps deferred in M1 become blocking for real
@@ -854,6 +854,331 @@ M1 (GL4→WebGL2 shader/buffer rework, if not already fully resolved).
 - Frame time instrumentation in place and visible in a debug overlay.
 - Playable (even if rough) on Quest 2 hardware, not just Chrome's WebXR
   emulator.
+
+### Current implementation status (2026-08-08)
+
+M6's direct-rendering implementation is complete in source and ready for
+hardware validation:
+
+- `engine.ts` creates the engine's WebGL2 context with `xrCompatible: true`
+  before loading Emscripten and supplies it as `preinitializedWebGLContext`.
+  `XRWebGLLayer` therefore shares the exact context the hardware renderer
+  uses; the former second XR canvas and flat-image mirror have been removed.
+- `XRWebGLLayer.framebuffer` is registered by `EM_JS` in
+  `platform/web/vr_webxr.cpp` in Emscripten's `GL.framebuffers` table. C++
+  treats its handle as borrowed and invalidates it on session end; it never
+  deletes the WebXR-owned framebuffer.
+- Each `XRFrame` forwards the two views' viewport, viewer-relative eye offset,
+  and projection matrix to `WebXRDeviceMode`. The engine's stereo path uses
+  those values when rendering the left and right eyes.
+- The normal Emscripten loop is paused for an immersive session. The WebXR
+  animation-frame callback runs exactly one engine tick/render via
+  `VR_WebXR_RunFrame`, while the XR framebuffer is valid, then schedules the
+  next XR frame. The normal loop resumes when the session ends.
+- Doom must start after entering VR, so it starts with the hardware renderer.
+  If Doom is already running, entering VR ends the session and asks for a
+  restart rather than trying to switch renderers in-process.
+
+`bash scripts/build-wasm.sh`, `npm run build` from `web/`, and
+`node scripts/smoke-gl.mjs http://localhost:5173 <path-to-DOOM2.WAD>` pass in
+desktop Chromium. The remaining M6 acceptance work requires a Quest or
+another real WebXR runtime: confirm both eye views, projection/axis signs,
+head tracking, session exit/re-entry, frame time, and playable performance.
+Frame-time instrumentation is not implemented yet, so M6 is not complete
+until that and the hardware checks pass.
+
+`-sGL_TESTING=1` remains temporarily even though the mirror renderer no longer
+uses it. The preinitialized context now requests `preserveDrawingBuffer`
+itself; remove the linker flag after direct rendering is validated on hardware.
+
+### Historical pre-implementation investigation (superseded)
+
+The notes below record the failures found while bringing up the WebGL2
+renderer before the direct M6 implementation. They are retained for context;
+their TODOs and statements about the current wall are no longer current.
+
+**In progress, 2026-08-08 -- much larger than originally scoped, real
+findings so far (all reproduced/verified in desktop Chrome, no headset
+needed for this part):**
+
+Discovered the actual blocker before writing a single line of stereo code:
+`vid_renderer` (`posix/sdl/hardware.cpp`) defaults to **0 = software
+renderer**, and `src/swrenderer/` never references `Stereo3DMode` anywhere
+-- confirmed via `grep`. That means M5's `WebXRDeviceMode::SetUp()` hook
+almost certainly never executed on real hardware either, despite compiling
+and linking cleanly; the "enemies moving" observed in the M5 hardware test
+was just the game ticking (the freeze fix), not evidence of working head
+tracking. M6 needs the hardware GL renderer (`gl_scene.cpp`,
+`Stereo3DMode`, per-eye viewports/FBOs are hardware-GL-only concepts), which
+had never actually been exercised since M1 -- M1's own scope was "compile
+and link only", and M2-M5 all happened to work fine on the software
+renderer path instead. This reframes M6 from "add stereo to a working
+renderer" to "first get the hardware renderer working under Emscripten at
+all, *then* add stereo" -- confirmed by forcing `vid_renderer 1` via a
+`+vid_renderer 1` command-line override (`web/src/engine.ts`'s `startDoom`,
+temporarily, not committed) and hitting real failures three layers deep so
+far:
+
+1. **`FATAL ERROR: Failed to load OpenGL functions.`** --
+   `gl/system/gl_load.c`'s `Emscripten_GetProcAddress()` (added during M1)
+   unconditionally returned `NULL` for every function name. The intent
+   (per its own comment) was only to correctly report GL4-only extensions
+   (`ARB_buffer_storage` etc.) as absent under WebGL2, but the exact same
+   stub also caught every *required* core function this loader requests
+   (every single `gl*` call in this codebase is macro-redirected through
+   `_ptrc_gl*` function pointers populated by this loader --
+   `#define glClearColor _ptrc_glClearColor` in `gl_load.h`, uniformly, not
+   just for extensions). **Fixed**: swapped in Emscripten's real, built-in
+   `emscripten_webgl_get_proc_address()` (backed by
+   `-sGL_ENABLE_GET_PROC_ADDRESS`, on by default) -- correctly resolves
+   real WebGL2/GLES3 functions and returns NULL for genuinely-unavailable
+   GL4 extensions. Also had to add `-sMAX_WEBGL_VERSION=2
+   -sMIN_WEBGL_VERSION=2` (`scripts/build-wasm.sh`) -- without it Emscripten
+   never creates a WebGL2 context regardless of what SDL requests, and this
+   renderer needs GL3-era features (UBOs, VAOs) WebGL1 doesn't have.
+2. **`TypeError: Cannot read properties of undefined (reading 'version')`**
+   inside Emscripten's own `emscriptenWebGLGet` (`GL.currentContext` itself
+   undefined at the point `ogl_LoadFunctions()` probes
+   `GL_NUM_EXTENSIONS`). `posix/sdl/sdlglvideo.cpp`'s context-creation path
+   (non-`__MOBILE__`) defaults to requesting a *desktop* `CORE` profile
+   context (`glver` fallback ladder from `{4,5}` down to `{2,0}`) -- not the
+   `PROFILE_ES` branch that code already has and that Android/real Quest
+   actually uses. **Worked around** (command-line only so far, not yet a
+   code fix) by passing `-glversion 3.0 +gl_es 1` to force the existing
+   `if (gl_es)` branch (`PROFILE_ES`, matching what real Quest hardware
+   requests) instead of the desktop core-profile ladder.
+3. **`RuntimeError: null function`** inside
+   `OpenGLFrameBuffer::InitializeState()` itself, at the very first basic
+   calls (`glClearColor`/`glClearDepth`/`glDepthFunc`/`glEnable`) -- same
+   crash address regardless of `-glversion 2.0` vs `3.0`, meaning it isn't
+   version-gated. Root cause not yet fixed: Emscripten's
+   `emscripten_webgl_get_proc_address()` apparently does not guarantee
+   resolving *core* function names either (some GL/EGL implementations
+   only guarantee GetProcAddress for extensions, expecting core functions
+   to be statically linked instead) -- so fix #1 above was necessary but
+   not sufficient. The real fix is architectural, not another one-line
+   patch: stop macro-redirecting core GLES3 functions through
+   `_ptrc_gl*`/loader indirection at all under `__EMSCRIPTEN__` (they're
+   directly-linkable Emscripten C symbols, no runtime loading needed --
+   that whole indirection layer exists only because *desktop* GL needs
+   `wglGetProcAddress`/`glXGetProcAddress` for anything beyond GL 1.1), and
+   reserve the proc-address loader path for the small set of genuinely
+   optional GL4 extensions this file also probes. This is a real, if
+   mechanical, editing pass over `gl_load.h`'s ~2000 lines of `#define`s,
+   not yet started.
+
+Not yet touched at all: the GLSL 400/430 → GLSL ES 300 shader
+compatibility gap (architecture doc §6) -- unknown how large this is until
+the loader/linking issue above is fully resolved and shaders actually get a
+chance to compile. The `if (gl.es)` branches already present in
+`gl_shader.cpp` (`ES_VERSION_STR`) are an encouraging sign this may be
+smaller than fresh porting work, since QuestZDoom's real Android/Quest
+build already exercises a GLES3 shader path in production -- but this is
+not yet verified empirically.
+
+None of the above required real Quest hardware -- the hardware GL renderer
+fails to even boot in desktop Chrome, so all three bugs were found and (two
+of three) fixed there. The temporary `+vid_renderer 1`/`-glversion`/`gl_es`
+command-line overrides used to reach each failure were not committed;
+`vid_renderer` still defaults to 0 (software) for normal play, unaffected
+by any of this work so far.
+
+### Historical handoff notes (2026-08-08, superseded)
+
+This was the pre-implementation handoff. The current M6 status above replaces
+its list of remaining work; retain the investigation details only as history.
+
+**Exactly what's committed vs. not, right now:**
+- Committed (pushed to `origin/master`) as of this writing: M1-M5, the
+  interim WebXR mirror renderer, the WebXR-session main-loop-timing fix,
+  the GPLv3 `LICENSE`. See `git log --oneline` for the exact commits.
+- **Uncommitted in the working tree** (left this way intentionally so they
+  can be reviewed/amended before committing, not because anything is
+  broken):
+  - `engine/src/gl/system/gl_load.c` -- the `Emscripten_GetProcAddress` fix
+    (real fix, safe, doesn't touch the software-renderer default path at
+    all -- `ogl_LoadFunctions()` is *only* called from
+    `OpenGLFrameBuffer::InitializeState()`, which normal play with
+    `vid_renderer 0` never reaches).
+  - `scripts/build-wasm.sh` -- adds `-sMAX_WEBGL_VERSION=2
+    -sMIN_WEBGL_VERSION=2` (real fix, same safety argument: irrelevant to
+    the software renderer, and WebGL2 is a superset of what M4/M5's
+    existing rendering needs, so this shouldn't regress anything already
+    working).
+  - `web/src/xr.ts` -- the small "release the XR canvas's GL context on
+    session end" robustness fix from the freeze/tearing investigation
+    (unrelated to M6 specifically, just hadn't been committed yet).
+  - `patches/engine/0001-emscripten-wasm-port.patch` -- regenerated to
+    match the `gl_load.c` change (`git -C engine diff > patches/engine/...`
+    after `git -C engine add -A -N .`; see the note on the patch strategy
+    at the top of this file's M1 section).
+  - `docs/implementation-plan.md` -- this section.
+- **NOT present anywhere** (tested via temporary command-line args, then
+  explicitly reverted, never committed): the `-glversion 3.0 +gl_es 1`
+  workaround for bug #2 above. `web/src/engine.ts`'s `startDoom()` currently
+  reads exactly `module.callMain(["-iwad", iwadPath])` -- if you want to
+  reproduce bug #2/#3, you need to re-add the extra args yourself (see
+  "how to reproduce" below). This was left out of `startDoom()`
+  permanently because it's a workaround, not a fix -- the real fix is
+  changing `posix/sdl/sdlglvideo.cpp`'s default context-request path so
+  desktop/Emscripten builds go through the `PROFILE_ES` branch without
+  needing a CVar/CLI override (see TODO list below).
+
+**How to reproduce every failure above, from scratch, in desktop Chrome
+(no headset needed):**
+1. Build: `bash scripts/build-wasm.sh` (picks up whatever's currently in
+   `engine/gl_load.c` and `scripts/build-wasm.sh` -- both already have the
+   two committed-to-working-tree fixes applied as of this writeup).
+2. Copy build output + a WAD into `web/public/`: see `scripts/dev.sh` for
+   the exact file list, or just `cp build/wasm/lzdoom.{js,wasm,pk3}
+   build/wasm/lz_game_support.pk3 web/public/engine/` and drop a WAD at
+   `web/public/DOOM2.WAD` for same-origin `fetch()` in a quick manual test
+   (cross-origin `fetch` of a file:// or different-port WAD hits CORS —
+   same-origin under `web/public/` is the simplest way around that when
+   scripting a WAD "drop" via `DragEvent`/`DataTransfer` instead of a real
+   file picker).
+3. Temporarily edit `web/src/engine.ts`'s `startDoom()`:
+   `module.callMain(["-iwad", iwadPath, "-glversion", "3.0", "+gl_es", "1",
+   "+vid_renderer", "1"])` -- reproduces bug #3 (the current wall) with
+   today's code. Drop the `-glversion`/`gl_es` args to reproduce bug #2
+   instead (desktop core-profile path, `GL.currentContext` undefined).
+   Drop the `gl_load.c` fix too (revert it) to reproduce bug #1 from
+   scratch.
+4. `npm run dev` in `web/`, load the page, drop/select a WAD, click "Start
+   Doom". Watch the browser console -- but note **the error surfaces as a
+   caught JS exception that `web/src/main.ts`'s `catch` block reduces to
+   just `err.message`**, losing the stack trace. To get the full stack
+   (essential for narrowing down *which* GL call/line failed), either
+   temporarily add `console.error(err)` in that catch block (there are
+   three near-identical catch blocks in `main.ts`; the one in the
+   "Start Doom" button handler is the relevant one), or register
+   `window.addEventListener('error', e => console.log(e.error?.stack))`
+   before triggering, and read it back afterward. Don't leave either of
+   these committed -- they're diagnostic-only.
+
+**Prioritized TODO to actually finish M6, in the order that makes sense to
+attempt them (each one is a real, separate unit of work -- don't attempt
+to skip ahead):**
+1. **Make `PROFILE_ES` the default under `__EMSCRIPTEN__`** in
+   `engine/src/posix/sdl/sdlglvideo.cpp`'s context-attribute-setup function
+   (~line 341-360) -- add an `#elif defined(__EMSCRIPTEN__)` branch
+   alongside the existing `#ifdef __MOBILE__` one, requesting
+   `SDL_GL_CONTEXT_PROFILE_ES` with a sensible major/minor (3.0 matches
+   what reproduced furthest above) unconditionally, rather than relying on
+   the `-glversion`/`+gl_es` CLI workaround. This turns bug #2's workaround
+   into a real fix and is a prerequisite for bug #3's fix to even be
+   testable without hand-typed CLI args every time.
+2. **Fix `gl_load.h`'s core-function indirection** (bug #3, the current
+   wall) -- under `__EMSCRIPTEN__`, functions that Emscripten provides
+   directly (essentially all of GLES3/WebGL2's real API surface) should
+   NOT go through the `_ptrc_gl*`/proc-address loader at all; only the
+   genuinely optional desktop-GL4 extensions this file also defines
+   (`ogl_ext_ARB_buffer_storage` and friends, already flagged separately)
+   should. Concretely: either (a) conditionally `#undef` the
+   `#define glXxx _ptrc_glXxx` redirections for core functions under
+   `__EMSCRIPTEN__` so the plain `glXxx` symbol resolves directly via
+   normal linking against Emscripten's real implementation, or (b) keep
+   the indirection but populate `_ptrc_glXxx` with the *real* function
+   pointer directly (e.g. `_ptrc_glClearColor = glClearColor;`, using
+   Emscripten's actual linked symbol, not a runtime string-based lookup)
+   for every core function, reserving `IntGetProcAddress`/
+   `emscripten_webgl_get_proc_address` calls for the true extensions only.
+   (b) is probably less invasive (doesn't require touching the huge
+   `#define` list in `gl_load.h`, just changing what `Load_*` functions in
+   `gl_load.c` do for the core subset) but requires enumerating exactly
+   which of `gl_load.c`'s `Load_*` functions are "core" vs "extension" --
+   skim the file for `ogl_ext_*` flags to tell them apart; anything never
+   gated behind an `ogl_ext_*` check afterward is core and unconditionally
+   required.
+3. **Get past `OpenGLFrameBuffer::InitializeState()` entirely, reach first
+   frame render** -- once #2 is fixed, expect more of the same class of
+   bug (missing/null function pointers) further into init, and then into
+   the first actual `RenderViewpoint()` call. Iterate using the same
+   reproduce-in-desktop-Chrome-with-`vid_renderer 1` loop; each fix should
+   get measurably further (further console log lines / further stack
+   frames) -- if a fix doesn't move the failure point, it's the wrong fix.
+4. **Shader compatibility (GLSL 400/430 → GLSL ES 300)** -- once actual
+   shader compilation is reached (not before -- don't try to pre-emptively
+   fix this without a concrete compile error in hand), expect failures in
+   `gl_shader.cpp`/the shader source lumps themselves
+   (`#version 400 core`/`#version 430 core` won't parse under WebGL2's
+   GLSL ES 3.00). The `if (gl.es)` branches already in `gl_shader.cpp`
+   (grep `ES_VERSION_STR`) suggest this path may already substantially
+   exist (built for real Android/Quest GLES3) rather than needing to be
+   written from scratch -- but this is *unverified*, treat it as the next
+   real unknown, not a known quantity.
+5. **Only then**: the actual M6 work as originally scoped --
+   `gl_webxrdevice.cpp`/`.h` (`WebXRDeviceMode`/`WebXRDeviceEyePose`),
+   wiring real per-eye viewport/projection from
+   `XRFrame.getViewerPose(...).views` into `Stereo3DMode`'s existing
+   per-eye render loop (`gl_scene.cpp`'s `RenderViewpoint()`), and getting
+   the XR session's own `layer.framebuffer` bound as the render target for
+   each eye (this needs a way to give Emscripten's `GL.framebuffers[]`
+   table an entry for the JS-side `XRWebGLLayer.framebuffer` object so C++
+   `glBindFramebuffer()` calls can target it -- not yet researched in
+   depth; community Emscripten+WebXR examples commonly do this via a small
+   `EM_JS`/JS-library snippet calling `GL.getNewId(GL.framebuffers)`, but
+   verify this against the actual Emscripten version vendored here rather
+   than assuming). At this point, replace the interim mirror renderer in
+   `web/src/xr.ts` (delete `createMirrorRenderer` and its call sites) --
+   it's explicitly a throwaway bridge, not something to build on top of.
+
+**Known risks / things that could still go sideways, roughly in order of
+how likely/scary they are:**
+- **Shader porting scope is completely unknown.** This is the single
+  biggest remaining unknown in the whole milestone. It could be almost
+  nothing (if the ES paths already in `gl_shader.cpp` just work) or a
+  multi-day shader-by-shader port (if WebGL2's stricter GLSL ES 3.00
+  validation rejects things the real Android GLES3 driver tolerated, or if
+  SSBO-dependent lighting paths have no ES equivalent at all and need a
+  UBO-based fallback written from scratch -- the architecture doc already
+  flags SSBOs as unavailable in WebGL2).
+- **Performance is completely unmeasured.** Software renderer performance
+  (what's shipped today) says nothing about hardware-GL performance on
+  Quest's mobile GPU, especially once stereo doubles the per-frame draw
+  count. The plan's own M6 acceptance criteria calls this the highest
+  perf-risk item in the project; no instrumentation exists yet to even
+  measure it.
+- **The `_ptrc_gl*` indirection removal (TODO #2) touches a ~2000-line
+  generated-looking file.** Low conceptual risk (mechanical), but
+  meaningful chance of missing a function that's actually used somewhere
+  non-obvious, producing a *new* null-function crash further into
+  rendering that looks superficially like a different bug. Cross-check
+  against `ogl_ext_*` flag usage sites (`grep -rn "ogl_ext_" src/gl/`)
+  before assuming something is "core".
+- **Never tested**: whether `SDL_GL_CreateContext`'s retry-ladder logic in
+  `sdlglvideo.cpp` (tries `{4,5}` down to `{2,0}` on the desktop path)
+  behaves sanely under Emscripten at all -- i.e. whether failed attempts
+  actually fail cleanly (returning NULL so the loop retries) or silently
+  "succeed" with a context that then misbehaves. TODO #1 above sidesteps
+  this by skipping the ladder entirely for Emscripten, but if that turns
+  out to be wrong for some reason, this ladder's actual behavior under
+  Emscripten is unverified terrain.
+- **Not yet re-verified**: that the default (`vid_renderer 0`) desktop
+  path still works after the `gl_load.c`/`build-wasm.sh` changes currently
+  sitting uncommitted. It was verified once after making them (title
+  screen loaded, normal `[doom]` log sequence, no new console errors) but
+  the screenshot tool itself became flaky/unresponsive near the end of
+  this session (likely browser-extension fatigue from many repeated
+  WebGL-context-churning test iterations in one tab, not a sign of a real
+  regression) -- worth one more clean verification pass (fresh tab) before
+  trusting this completely.
+
+**Dead ends / things already ruled out, don't re-try these:**
+- The interim WebXR mirror renderer (`web/src/xr.ts`'s
+  `createMirrorRenderer`) is not a path toward real stereo -- it reads
+  back a second canvas via `texImage2D` with no synchronization between
+  the engine's own render loop and the XR session's frame loop, which is
+  *why* M6 (real per-eye rendering into the XR layer's own framebuffer)
+  is necessary in the first place, not an alternative to it.
+- Simply flipping `vid_renderer` to 1 without the `gl_load.c` fix just
+  produces the silent-hang/fatal-error from bug #1 -- don't waste time
+  re-diagnosing that from scratch, the fix is already in the working tree.
+- `-sGL_TESTING=1` (added earlier for the mirror renderer's
+  `preserveDrawingBuffer` need) and `-sMAX_WEBGL_VERSION=2
+  -sMIN_WEBGL_VERSION=2` (added for this work) are unrelated flags for
+  unrelated problems -- don't assume one subsumes the other or try to
+  remove one while debugging the other's problem space.
 
 ---
 
