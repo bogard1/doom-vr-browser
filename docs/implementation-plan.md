@@ -1214,9 +1214,33 @@ project brief's example signatures), `platform/web/vr_webxr.cpp`.
   equivalents) — matching the brief's suggested default mapping.
 - Mapping is table-driven/configurable, not hardcoded to a single physical
   controller model.
-- Haptic pulse (`VR_HapticPulse`) triggers on at least one game event (e.g.
-  firing) as a smoke test — full haptic design can wait, but the ABI path
-  must be proven end-to-end here.
+- An optional Gamepad haptic pulse is requested on right-trigger fire as a
+  smoke test; full haptic design can wait, but the browser API path must be
+  proven end-to-end here.
+
+**Status: implemented in source, pending headset validation.**
+`web/src/input.ts` accepts only `xr-standard` controllers with a left or right
+handedness. It snapshots a controller's initial state, emits events only on
+transitions, and releases every held key if the controller disappears, changes
+mapping, or the XR session ends. This prevents a controller that appears with
+a held trigger from firing or leaving movement/menu keys stuck.
+
+The base mapping is table-driven through the engine's existing virtual gamepad
+keys: right/left triggers map to attack/alt-attack, squeeze maps to the
+corresponding shoulder key, and stick clicks map to right/left thumb keys.
+Recognized Meta/Oculus Touch profiles additionally map right A/B and left X/Y
+to the engine's face-button keys. The browser defaults make A use, B switch to
+the next weapon, X jump, right trigger attack, left trigger alt-attack, left
+stick click crouch, and Y toggle the automap; users may rebind any virtual key
+in the engine.
+
+Stick axes become digital cardinal thumbstick keys with 0.60 press and 0.45
+release thresholds. They allow menu navigation and bindings now, but do not
+move or turn the player: raw analog locomotion is intentionally deferred to
+M8. A 20 ms optional Web Gamepad haptic pulse is requested when the right
+trigger transitions down; unsupported controllers ignore it without affecting
+input. Quest validation must confirm the real profile/button ordering,
+bindings, release behavior, and haptic support.
 
 ---
 

@@ -19,8 +19,9 @@ Nothing is uploaded anywhere.
 - ✅ Verified end-to-end in Chrome with a real `DOOM2.WAD`
 - ✅ WebXR session lifecycle, head tracking, direct per-eye stereo rendering,
   and a fixed head-relative weapon viewmodel work on headset hardware
-- 🚧 Quest frame-time measurement, controller input, locomotion, and
-  controller-tracked weapons remain (see `docs/implementation-plan.md`, M6+)
+- 🚧 Quest frame-time measurement and controller-input validation remain;
+  locomotion and controller-tracked weapons are future work
+  (see `docs/implementation-plan.md`, M6+)
 - ⚠️ Known limitation: in-game renderer-restart (a rarely-used CCMD) doesn't
   work in the browser build; regular gameplay is unaffected
 

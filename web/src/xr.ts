@@ -27,6 +27,7 @@ export type XRViewsFn = (
   }>,
 ) => void;
 export type XRFrameFn = () => void;
+export type XRInputSourcesFn = (sources: readonly XRInputSource[]) => void;
 export interface XRFrameMetrics {
   frameMs: number;
   fps: number;
@@ -62,6 +63,7 @@ export async function enterVR(
   onSessionReady: () => void,
   onPose: XRPoseFn,
   onViews: XRViewsFn,
+  onInputSources: XRInputSourcesFn,
   onEngineFrame: XRFrameFn,
   onMetrics: XRMetricsFn,
   gl: WebGL2RenderingContext,
@@ -100,7 +102,7 @@ export async function enterVR(
   onFramebufferReady(layer.framebuffer);
   onSessionReady();
   frameCount = 0;
-  session.requestAnimationFrame(onXRFrame(log, onPose, onViews, onEngineFrame, onMetrics, layer));
+  session.requestAnimationFrame(onXRFrame(log, onPose, onViews, onInputSources, onEngineFrame, onMetrics, layer));
 }
 
 export function exitVR(): void {
@@ -111,6 +113,7 @@ function onXRFrame(
   log: XRLogFn,
   onPose: XRPoseFn,
   onViews: XRViewsFn,
+  onInputSources: XRInputSourcesFn,
   onEngineFrame: XRFrameFn,
   onMetrics: XRMetricsFn,
   layer: XRWebGLLayer,
@@ -163,6 +166,11 @@ function onXRFrame(
       log("Head pose: not yet tracked.");
     }
 
+    const sources = Array.from(xrFrame.session.inputSources);
+    // Sample controls before the engine tick so transitions are consumed by
+    // the same frame's normal input queue.
+    onInputSources(sources);
+
     // The engine's independent browser rAF is paused during XR. Rendering
     // here keeps its framebuffer use inside this XR frame's valid window.
     const engineStart = performance.now();
@@ -187,7 +195,6 @@ function onXRFrame(
 
     if (!shouldLog) return;
 
-    const sources = Array.from(xrFrame.session.inputSources);
     if (sources.length === 0) {
       log("Controllers: none detected.");
     } else {

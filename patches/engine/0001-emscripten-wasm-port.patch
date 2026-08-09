@@ -177,10 +177,10 @@ index 0000000000..5cdbe4efad
 +}
 diff --git c/platform/web/vr_webxr.cpp i/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..dc9a4c7016
+index 0000000000..35f826b633
 --- /dev/null
 +++ i/platform/web/vr_webxr.cpp
-@@ -0,0 +1,377 @@
+@@ -0,0 +1,389 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -201,6 +201,8 @@ index 0000000000..dc9a4c7016
 +#include "r_utility.h"
 +#include "c_cvars.h"
 +#include "c_dispatch.h"
++#include "d_event.h"
++#include "doomdef.h"
 +#include "gl/renderer/gl_renderer.h"
 +#include "gl/renderer/gl_renderbuffers.h"
 +
@@ -426,6 +428,16 @@ index 0000000000..dc9a4c7016
 +	state.hasProjection = true;
 +}
 +
++void VR_WebXR_PostKeyEvent(int key, int down)
++{
++	if (key <= 0 || key >= NUM_KEYS) return;
++
++	event_t event = {};
++	event.type = down ? EV_KeyDown : EV_KeyUp;
++	event.data1 = static_cast<int16_t>(key);
++	D_PostEvent(&event);
++}
++
 +void VR_WebXR_Recenter()
 +{
 +	g_haveYawZero = false;
@@ -560,10 +572,10 @@ index 0000000000..dc9a4c7016
 +} // namespace s3d
 diff --git c/platform/web/vr_webxr.h i/platform/web/vr_webxr.h
 new file mode 100644
-index 0000000000..b5df6f835b
+index 0000000000..aafb192108
 --- /dev/null
 +++ i/platform/web/vr_webxr.h
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +// WebXR head-tracking and stereo bridge. The browser passes only primitive
 +// values through this C ABI; this code never needs WebXR JS types or the JS
 +// heap.
@@ -591,6 +603,7 @@ index 0000000000..b5df6f835b
 +	float m04, float m05, float m06, float m07,
 +	float m08, float m09, float m10, float m11,
 +	float m12, float m13, float m14, float m15);
++void VR_WebXR_PostKeyEvent(int key, int down);
 +int VR_WebXR_RunFrame();
 +
 +} // extern "C"
@@ -2226,3 +2239,17 @@ index 7e4fa29b7c..dbf45ee12b 100644
 +mouse2 +altattack
 +mouse3 +speed
 +mouse1 +attack
+diff --git c/wadsrc/static/defbinds.txt i/wadsrc/static/defbinds.txt
+index ed0eb75219..237e7e1e6a 100644
+--- c/wadsrc/static/defbinds.txt
++++ i/wadsrc/static/defbinds.txt
+@@ -58,7 +58,8 @@ end centerview
+ 
+ // Xbox 360 / PS2 controllers
+ pad_a +use
+-pad_b +jump
++pad_b "weapnext 1"
++pad_x +jump
+ rtrigger +attack
+ ltrigger +altattack
+ dpadleft invprev

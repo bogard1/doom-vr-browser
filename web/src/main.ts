@@ -1,7 +1,8 @@
 import "./style.css";
 import { readWadFile, type LoadedWad } from "./wad-loader";
-import { getEngineContext, invalidateWebXRFramebuffer, loadEngine, mountWad, registerWebXRFramebuffer, runWebXRFrame, startDoom, setWebXRActive, setWebXREye, setWebXRHeadPose, type DoomModule } from "./engine";
+import { getEngineContext, invalidateWebXRFramebuffer, loadEngine, mountWad, postWebXRKey, registerWebXRFramebuffer, runWebXRFrame, startDoom, setWebXRActive, setWebXREye, setWebXRHeadPose, type DoomModule } from "./engine";
 import { StatusLog } from "./debug";
+import { WebXRInput } from "./input";
 import { enterVR, exitVR, isImmersiveVRSupported, isInXRSession } from "./xr";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -34,6 +35,7 @@ const vrSupportEl = document.querySelector<HTMLParagraphElement>("#vr-support")!
 const xrMetricsEl = document.querySelector<HTMLOutputElement>("#xr-metrics")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const status = new StatusLog(document.querySelector<HTMLDivElement>("#status")!);
+const xrInput = new WebXRInput();
 
 let currentWad: LoadedWad | null = null;
 // M5: the engine module and the WebXR session load/start independently
@@ -42,6 +44,11 @@ let currentWad: LoadedWad | null = null;
 // activates exactly when both sides are ready, in either order.
 let currentModule: DoomModule | null = null;
 let xrActive = false;
+let doomStarted = false;
+
+function postXRKey(key: number, down: boolean): void {
+  if (currentModule) postWebXRKey(currentModule, key, down);
+}
 
 async function handleFile(file: File): Promise<void> {
   try {
@@ -86,8 +93,10 @@ startButton.addEventListener("click", async () => {
     status.log("Mounting WAD…");
     const iwadPath = mountWad(engine, currentWad);
     status.log(`Starting engine with -iwad ${iwadPath}`);
+    doomStarted = true;
     startDoom(engine, iwadPath, true);
   } catch (err) {
+    doomStarted = false;
     status.error(err instanceof Error ? err.message : String(err));
     startButton.disabled = false;
   }
@@ -113,6 +122,7 @@ enterVRButton.addEventListener("click", async () => {
       (msg) => status.log(msg),
       () => {
         xrActive = false;
+        xrInput.reset(doomStarted, postXRKey);
         if (currentModule) {
           invalidateWebXRFramebuffer(currentModule);
           setWebXRActive(currentModule, false);
@@ -134,6 +144,9 @@ enterVRButton.addEventListener("click", async () => {
         if (currentModule) {
           for (const view of views) setWebXREye(currentModule, view);
         }
+      },
+      (sources) => {
+        xrInput.update(sources, doomStarted, postXRKey);
       },
       () => {
         runWebXRFrame(engine);

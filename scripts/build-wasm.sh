@@ -45,7 +45,7 @@ mkdir -p "${BUILD_DIR}"
 #   the things engine.ts/xr.ts call directly (mounting the WAD, starting
 #   main() once it's mounted, and -- from M5 -- pushing WebXR head-pose
 #   samples into the engine every XR frame via ccall).
-# -sEXPORTED_FUNCTIONS: _main plus the M5/M6 WebXR bridge entry points
+# -sEXPORTED_FUNCTIONS: _main plus the M5-M7 WebXR bridge entry points
 #   (platform/web/vr_webxr.cpp) -- listing EXPORTED_FUNCTIONS at all
 #   overrides Emscripten's implicit "_main"-only default, so _main must be
 #   repeated here or callMain stops working.
@@ -85,7 +85,7 @@ emcmake cmake \
 	-DIMPORT_EXECUTABLES="${IMPORT_EXECUTABLES}" \
 	-DNO_OPENMP=ON \
 	-DCMAKE_CXX_FLAGS="-fexceptions" \
-	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS,ccall -sEXPORTED_FUNCTIONS=_main,_VR_WebXR_SetActive,_VR_WebXR_SetHeadPose,_VR_WebXR_RegisterFramebuffer,_VR_WebXR_InvalidateFramebuffer,_VR_WebXR_SetEyeViewport,_VR_WebXR_SetEyeOffset,_VR_WebXR_SetEyeProjection,_VR_WebXR_RunFrame -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=16777216 -sGL_TESTING=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sGL_ENABLE_GET_PROC_ADDRESS=1 -sGL_PREINITIALIZED_CONTEXT=1" \
+	-DCMAKE_EXE_LINKER_FLAGS="-fexceptions -sEXCEPTION_STACK_TRACES -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createLzdoomModule -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS,ccall -sEXPORTED_FUNCTIONS=_main,_VR_WebXR_SetActive,_VR_WebXR_SetHeadPose,_VR_WebXR_RegisterFramebuffer,_VR_WebXR_InvalidateFramebuffer,_VR_WebXR_SetEyeViewport,_VR_WebXR_SetEyeOffset,_VR_WebXR_SetEyeProjection,_VR_WebXR_PostKeyEvent,_VR_WebXR_RunFrame -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=16777216 -sGL_TESTING=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sGL_ENABLE_GET_PROC_ADDRESS=1 -sGL_PREINITIALIZED_CONTEXT=1" \
 	"$@"
 
 cmake --build "${BUILD_DIR}"

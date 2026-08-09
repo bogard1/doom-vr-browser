@@ -172,6 +172,12 @@ export function setWebXRHeadPose(
   );
 }
 
+// M7: injects an xr-standard controller transition into Doom's ordinary input
+// queue, preserving the normal console/menu/game responder order.
+export function postWebXRKey(module: DoomModule, key: number, down: boolean): void {
+  module.ccall("VR_WebXR_PostKeyEvent", null, ["number", "number"], [key, down ? 1 : 0]);
+}
+
 // M6: forwards the viewer-relative pose, viewport and projection supplied by
 // one XRView. The engine stays mono until the XR layer framebuffer is
 // registered, so this can be wired and validated independently of presenting

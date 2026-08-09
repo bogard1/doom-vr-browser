@@ -37,12 +37,12 @@ context with `XRWebGLLayer`, renders the two eye views directly, and has been
 validated on headset hardware for session lifecycle, head tracking, world
 stereo, and a fixed head-relative weapon viewmodel.
 
-The page now displays rolling XR frame cadence and JS/WASM engine CPU time; the
-remaining work is to record those metrics during representative Quest gameplay,
-followed by controller input, locomotion, and controller-tracked weapons. The
-analysis and strategy sections below retain the original risks and decisions;
-where they describe a future porting task, the later status notes supersede
-them.
+The page now displays rolling XR frame cadence and JS/WASM engine CPU time.
+M7 also translates `xr-standard` controller transitions to the engine's normal
+virtual gamepad keys; it needs Quest validation before locomotion and
+controller-tracked weapons. The analysis and strategy sections below retain the
+original risks and decisions; where they describe a future porting task, the
+later status notes supersede them.
 
 ## 2. Relevant repositories / submodules
 
