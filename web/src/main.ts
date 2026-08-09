@@ -16,6 +16,7 @@ app.innerHTML = `
     <button id="start" disabled>Start Doom</button>
     <button id="enter-vr" disabled>Enter VR</button>
     <p id="vr-support"></p>
+    <output id="xr-metrics" hidden></output>
 
     <canvas id="canvas" width="640" height="480" hidden></canvas>
 
@@ -30,6 +31,7 @@ const selectedEl = document.querySelector<HTMLParagraphElement>("#selected")!;
 const startButton = document.querySelector<HTMLButtonElement>("#start")!;
 const enterVRButton = document.querySelector<HTMLButtonElement>("#enter-vr")!;
 const vrSupportEl = document.querySelector<HTMLParagraphElement>("#vr-support")!;
+const xrMetricsEl = document.querySelector<HTMLOutputElement>("#xr-metrics")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
 const status = new StatusLog(document.querySelector<HTMLDivElement>("#status")!);
 
@@ -122,6 +124,8 @@ enterVRButton.addEventListener("click", async () => {
       () => {
         xrActive = true;
         setWebXRActive(engine, true);
+        xrMetricsEl.hidden = false;
+        xrMetricsEl.textContent = "XR: measuring frame time...";
       },
       (orientation, position) => {
         if (currentModule) setWebXRHeadPose(currentModule, orientation, position);
@@ -133,6 +137,16 @@ enterVRButton.addEventListener("click", async () => {
       },
       () => {
         runWebXRFrame(engine);
+      },
+      (metrics) => {
+        if (!metrics) {
+          xrMetricsEl.hidden = true;
+          return;
+        }
+        xrMetricsEl.hidden = false;
+        xrMetricsEl.textContent =
+          `XR ${metrics.fps.toFixed(1)} fps | frame ${metrics.frameMs.toFixed(2)} ms | ` +
+          `engine ${metrics.engineMs.toFixed(2)} ms`;
       },
       getEngineContext(),
     );

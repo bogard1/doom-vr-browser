@@ -43,6 +43,18 @@ button#start {
   font-size: 1rem;
 }
 
+#xr-metrics {
+  display: block;
+  margin: 0.75rem 0;
+  color: #9ee493;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+#xr-metrics[hidden] {
+  display: none;
+}
+
 canvas#canvas:not([hidden]) {
   display: block;
   width: 100%;

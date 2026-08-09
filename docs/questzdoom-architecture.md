@@ -24,8 +24,25 @@ should be imported).
 - License: **GPLv3** (top-level `LICENSE`), with additional per-contributor
   licenses under `docs/licenses/` in the engine submodule. Any code we reuse
   or derive from this tree inherits GPLv3 obligations — see the Licensing
-  section of the top-level project plan; this must be tracked in
-  `THIRD_PARTY.md` before any code is copied.
+   section of the top-level project plan; the top-level `LICENSE` covers the
+   combined browser port and this document records the relevant upstream
+   provenance.
+
+## Current web-port status
+
+This study began before implementation. The browser port now builds the engine
+under Emscripten, runs Doom with keyboard input and OpenAL-over-WebAudio sound
+effects, and uses the hardware WebGL2 renderer. WebXR shares that renderer's
+context with `XRWebGLLayer`, renders the two eye views directly, and has been
+validated on headset hardware for session lifecycle, head tracking, world
+stereo, and a fixed head-relative weapon viewmodel.
+
+The page now displays rolling XR frame cadence and JS/WASM engine CPU time; the
+remaining work is to record those metrics during representative Quest gameplay,
+followed by controller input, locomotion, and controller-tracked weapons. The
+analysis and strategy sections below retain the original risks and decisions;
+where they describe a future porting task, the later status notes supersede
+them.
 
 ## 2. Relevant repositories / submodules
 
@@ -120,11 +137,12 @@ for stereo output, predating the Quest port:
 - Mode selection is a CVar: `vr_mode` (`gl_stereo_cvars.cpp:40`), dispatched
   in `setCurrentMode()` (`gl_stereo_cvars.cpp:113`).
 
-This `Stereo3DMode`/`EyePose` pair is the **single best reuse point** for a
-WebXR port: a new `WebXRDeviceMode : public Stereo3DMode` /
-`WebXRDeviceEyePose : public ShiftedEyePose` can plug into exactly the same
-seam that `OpenXRDeviceMode` uses today, with no changes needed to the
-generic renderer.
+This `Stereo3DMode`/`EyePose` pair is the reuse point used by the WebXR port:
+`platform/web/vr_webxr.cpp` implements `WebXRDeviceMode` and
+`WebXRDeviceEyePose` against this seam. It consumes live `XRView` projection
+matrices and viewer-relative eye offsets rather than the native mode's fixed
+IPD CVar, and presents into the WebXR layer framebuffer registered in
+Emscripten's GL table.
 
 Important nuance: **`gl_openxrdevice.cpp` itself contains zero direct OpenXR
 API calls.** It calls a small set of `extern` free functions
@@ -224,6 +242,13 @@ in the OpenAL backend's streaming thread. Core gameplay code (`p_*.cpp`,
 
 ## 6. Rendering architecture
 
+The following was the pre-implementation audit. Its GL4/WebGL2 gaps have been
+addressed for the current hardware renderer: GLES3/WebGL2 shader paths are
+selected, dynamic lights use a UBO-compatible path, persistent mapping is
+replaced with CPU staging and `glBufferSubData`, and desktop-only GL state is
+guarded. Desktop Chromium smoke tests and headset stereo rendering now work;
+Quest performance still needs measurement.
+
 - GL renderer (`src/gl/`) targets **desktop GL 3.x/4.x**, not pure GLES3/
   WebGL2: shaders declare `#version 400 core` / `#version 430 core`
   (`gl_shader.cpp`) and the dynamic-lights path uses
@@ -239,10 +264,9 @@ in the OpenAL backend's streaming thread. Core gameplay code (`p_*.cpp`,
 - No compute shaders and no real `glDrawElementsIndirect`/multi-draw call
   sites in use (only declared, unused, in the desktop GL extension loader) —
   not a real blocker.
-- A software renderer (`src/swrenderer/`, `src/polyrenderer/`) exists as a
-  fallback and is what the Android/mobile GLES2-class path may already lean
-  on for low-end devices — worth checking as a *lower-risk initial rendering
-  target* if the GL4 path proves too costly to port quickly.
+- A software renderer (`src/swrenderer/`, `src/polyrenderer/`) remains in the
+  engine, but the browser UI starts the hardware GL renderer because
+  `Stereo3DMode` is required for direct WebXR stereo output.
 
 ## 7. Input architecture
 
@@ -284,10 +308,10 @@ input.
 - On Android, OpenAL Soft is vendored/built from source
   (`Projects/Android/jni/SupportLibs/openal/`) with Android-specific backends
   (`Alc/backends/opensl.c`, `android.c`) that obviously don't apply to Web.
-- Emscripten has its own OpenAL-compatible shim (`-lopenal`) that maps onto
-  Web Audio, OR the engine's OpenAL abstraction could be replaced with a
-  thin WebAudio backend — this is a real decision point for Phase 1, see
-  Recommended Strategy below.
+- The port uses Emscripten's OpenAL-compatible `-lopenal` shim, which maps to
+  Web Audio. A real user click is required by autoplay policy. One-shot sound
+  effects work; streamed music is disabled because its backend requires a
+  thread and this build intentionally avoids WASM threads.
 - MIDI/synth stack (WildMidi, Timidity/Timidity++, OPN/OPL FM synths,
   game-music-emu for tracker/console formats, ZMusic wrapper) is large in
   code size (`libraries/` ≈ 14 MB) and mostly there for music-format
@@ -328,10 +352,10 @@ so this is a config flag, not new code.
 
 ## 12. OpenGL / OpenGL ES dependencies
 
-Covered in §6. Summary: GL4-only SSBO dynamic-lights path and GL4.4
-persistent-mapped buffers are the two real blockers; everything else in the
-GL renderer is plausible GLES3/WebGL2-compatible with moderate rework. The
-software renderer is a fallback worth evaluating for a faster first port.
+Covered in §6. The originally identified SSBO and persistent-mapping blockers
+were ported to WebGL2-compatible paths. The hardware renderer is now the
+browser default and direct WebXR stereo route; remaining work is performance
+profiling rather than basic GL compatibility.
 
 ## 13. Operating-system-specific code
 
@@ -357,7 +381,12 @@ Emscripten). The Android build's one *prebuilt binary* dependency
 (`openxr_loader_for_android` .so) is Quest-specific and dropped entirely for
 the web port (WebXR needs no client library — it's a browser JS API).
 
-## 15. Likely Emscripten incompatibilities (ranked)
+## 15. Original Emscripten incompatibility audit
+
+The table records the risks identified before implementation. Items 1, 2, 3,
+6, and the OpenAL part of item 5 have been resolved in the committed patch;
+the remaining practical concern is Quest performance and the intentionally
+thread-free streamed-music limitation.
 
 | # | Issue | Severity | Fix |
 |---|---|---|---|
@@ -371,7 +400,11 @@ the web port (WebXR needs no client library — it's a browser JS API).
 | 8 | ndk-build (`Android.mk`) build description is not portable to Emscripten | Moderate (tooling, not code) | Use the engine's *desktop* `CMakeLists.txt` as the Emscripten starting point instead, with an Emscripten toolchain file; ignore all `mobile/Android_*.mk` files |
 | 9 | `chdir("/sdcard/QuestZDoom")` and other Quest-glue assumptions | None (not in engine tree) | Simply don't port `QzDoom/` — write a new, much smaller web glue layer instead |
 
-## 16. Recommended Web Port Strategy
+## 16. Original Web Port Strategy
+
+The strategy below guided the completed M1-M6 implementation. The current
+architecture is summarized at the top of this document and in the M6 status
+of `implementation-plan.md`; M7-M10 remain future work.
 
 1. **Engine choice: adapt LZDoom/`DrBeef/gzdoom@questzdoom` itself**, not a
    simpler engine (PrBoom+/dsda-doom/Crispy/Chocolate Doom). Those engines
@@ -393,7 +426,7 @@ the web port (WebXR needs no client library — it's a browser JS API).
    renderers, and strip unneeded MIDI backends via existing CMake options
    (`FORCE_INTERNAL_*` / library-enable flags already present at
    `CMakeLists.txt:335-449`) before touching any engine source.
-3. **First compile target: get *anything* to link**, expecting the GL4
+3. **Initial compile target: get *anything* to link**, expecting the GL4
    renderer to fail first. If the GL renderer proves too costly to get
    rendering correctly in the short term, the software renderer
    (`src/swrenderer/`) is a legitimate fallback to reach "Doom renders to a

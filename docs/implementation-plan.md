@@ -3,9 +3,10 @@
 Companion to [`questzdoom-architecture.md`](./questzdoom-architecture.md).
 This plan sequences the work described in the project brief into concrete,
 independently-testable milestones. Each milestone lists goal, affected
-components, expected technical problems, and acceptance criteria. Work
-proceeds strictly in order — do not start a milestone until the previous
-one's acceptance criteria are met, per the brief's "incremental only" rule.
+components, expected technical problems, and acceptance criteria. The original
+sequence below remains useful for tracing decisions; implementation proceeded
+incrementally, while some hardware-only acceptance checks necessarily remained
+open until a headset was available.
 
 Engine baseline for all milestones: `DrBeef/gzdoom@questzdoom`
 (LZDoom 3.88b), built from its desktop `CMakeLists.txt` under Emscripten,
@@ -242,10 +243,9 @@ regardless of filename.
   filename.
 - Clear error shown for invalid/non-WAD files rather than a silent hang.
 
-**Status: plumbing done; real-gameplay verification is now an M3 blocker, not
-an M2 one.** The WAD-loader pipeline itself (file → FS → callMain) is fully
-working end-to-end with a real, user-supplied `DOOM2.WAD` — see M3's status
-note below for what was found testing it for real, and the current blocker.
+**Status: complete.** The WAD-loader pipeline (file → FS → `callMain`) works
+end-to-end with a real, user-supplied `DOOM2.WAD`; M3 later verified gameplay,
+keyboard input, and sound effects in the browser.
 
 `web/` (Vite + TS, per Phase 2's preferred stack) has
 `src/wad-loader.ts` (drag/drop + file-input, validates the IWAD/PWAD magic
@@ -304,9 +304,8 @@ engine input backend (`src/posix/` or new `src/web/` platform backend).
 - Playable end-to-end on a desktop browser (Chrome/Firefox) at a stable
   frame rate for a full level.
 
-**Status: in progress, real engine startup got much further than expected,
-current blocker identified.** Tested with the user's own `DOOM2.WAD` (2026
-08-07/08 session, same day as M1/M2). This surfaced several real engine bugs
+**Status: complete.** Tested with the user's own `DOOM2.WAD` (2026-08-07/08
+session, same day as M1/M2). This surfaced several real engine bugs
 beyond the M1 compile/link fixes — all in `engine/`, folded into
 `patches/engine/0001-emscripten-wasm-port.patch`:
 
@@ -640,7 +639,10 @@ yet, per Phase 3 of the brief.
 - Controller input sources can be enumerated (log to debug overlay).
 - No regression to M3's desktop-mode gameplay.
 
-**Status: implemented 2026-08-08, verified as far as desktop Chrome allows.**
+**Historical M4 implementation notes (superseded by M6).** M4 established the
+session lifecycle; M6 replaced its separate-context experiment with the shared
+engine WebGL2 context and direct XR framebuffer rendering. The working session
+and stereo output are now verified on headset hardware.
 `web/src/xr.ts` is a new, self-contained module — deliberately not wired
 into `engine.ts` at all, per "no engine integration yet": it creates its
 *own* `<canvas>`/WebGL2 context (`{ xrCompatible: true }`) purely to satisfy
@@ -672,8 +674,7 @@ works exactly as designed, fails safe, throws nothing. Confirmed zero
 regression: WAD drop → Start Doom → real gameplay in MAP01 still works
 unchanged after these `main.ts` edits.
 
-**Not yet verified** (needs either real Quest Browser or the WebXR API
-Emulator Chrome extension, neither available in this sandboxed browser):
+**Historical pre-M6 verification state** (before Quest hardware was available):
 the actual `requestSession("immersive-vr")` → `XRWebGLLayer` →
 `getViewerPose()`/`inputSources` positive path. Real-device testing over
 LAN will also need HTTPS (self-signed cert / `mkcert`) per the brief's own
@@ -720,13 +721,14 @@ JS→WASM bridge calls).
 - Yaw, pitch, and roll all verified working (added incrementally, each
   tested before the next).
 
-**Status: implemented 2026-08-08, verified as far as no-headset/no-emulator
-desktop Chrome allows -- real-hardware verification is the user's next step,
-not done here.**
+**Historical M5 implementation notes (superseded by M6).** Head-pose/body-yaw
+separation remains the active implementation; M6 added live per-eye rendering
+and headset validation.
 
 New `engine/platform/web/vr_webxr.h`/`.cpp`: a `WebXRDeviceMode : Stereo3DMode`
-(mono-only for now, mirroring `MonoView`'s single `EyePose` -- stereo per-eye
-rendering is M6) whose `SetUp()` is where the actual work happens. Confirmed
+whose `SetUp()` is where the actual work happens. It was mono during M5; M6
+added live per-eye projection, eye offset, viewport, framebuffer, and
+weapon-sprite rendering. Confirmed
 by reading `gl_scene.cpp`'s `RenderViewpoint()` that `R_SetupFrame()` (which
 derives `r_viewpoint.Angles` from the player actor's real body angle) always
 runs *before* `Stereo3DMode::SetUp()`, so `WebXRDeviceMode::SetUp()` can add
@@ -781,15 +783,14 @@ don't know about) -- not required by this milestone's acceptance criteria.
 
 Verified: engine builds clean under Emscripten with the new files/CMake
 wiring and the new exported symbols show up in the built `lzdoom.js`; full
-M3 regression re-run in real desktop Chrome (drop `DOOM2.WAD`, title →
-skill select → MAP01 → move with `w`) shows no behavior change and no new
-console errors, confirming the `WebXR_IsActive() == false` default path is
-identical to the old hardcoded `MonoView` selection. **Not verified**: any
-actual VR rendering/tracking, since no Quest hardware or WebXR emulator
-extension is available in this environment -- the yaw/pitch/roll sign
-analysis above is analytical, not empirically confirmed. That verification,
-plus M4's still-outstanding positive-session-path check, is the user's next
-step on real hardware.
+M3 regression re-run in desktop Chrome (drop `DOOM2.WAD`, title → skill select
+→ MAP01 → move with `w`) shows no behavior change and no new console errors,
+confirming the `WebXR_IsActive() == false` default path remains `MonoView`.
+Later Quest testing verified the positive M4/M5 session and tracking path as
+part of the M6 direct-stereo implementation. Controller input and locomotion
+remain M7/M8 work.
+
+### Historical M5 mirror investigation (superseded by M6)
 
 **Real-hardware findings, 2026-08-08 (Quest 2, same session)**: entering VR
 showed solid black. Root cause: M4/M5 never rendered into the XR session's
@@ -855,10 +856,9 @@ the hardware GL renderer, `web/src/engine.ts`, `web/src/main.ts`, and
 - Playable (even if rough) on Quest 2 hardware, not just Chrome's WebXR
   emulator.
 
-### Current implementation status (2026-08-08)
+### Current implementation status (2026-08-09)
 
-M6's direct-rendering implementation is complete in source and ready for
-hardware validation:
+M6's direct-rendering implementation works on headset hardware:
 
 - `engine.ts` creates the engine's WebGL2 context with `xrCompatible: true`
   before loading Emscripten and supplies it as `preinitializedWebGLContext`.
@@ -875,6 +875,9 @@ hardware validation:
   rather than as an independent 2D image in each eye. This gives the weapon
   correct stereo disparity; controller-pose-driven weapon placement remains
   follow-up work for M7.
+- `xr.ts` reports rolling one-second XR frame cadence and the CPU time spent
+  in `VR_WebXR_RunFrame` in the page UI. It deliberately does not label this
+  CPU timing as GPU/compositor time.
 - The normal Emscripten loop is paused for an immersive session. The WebXR
   animation-frame callback runs exactly one engine tick/render via
   `VR_WebXR_RunFrame`, while the XR framebuffer is valid, then schedules the
@@ -883,13 +886,13 @@ hardware validation:
   entered either before or after loading a WAD without trying to switch
   renderers in-process.
 
-`bash scripts/build-wasm.sh`, `npm run build` from `web/`, and
-`node scripts/smoke-gl.mjs http://localhost:5173 <path-to-DOOM2.WAD>` pass in
-desktop Chromium. The remaining M6 acceptance work requires a Quest or
-another real WebXR runtime: confirm both eye views, projection/axis signs,
-head tracking, session exit/re-entry, frame time, and playable performance.
-Frame-time instrumentation is not implemented yet, so M6 is not complete
-until that and the hardware checks pass.
+`bash scripts/build-wasm.sh`, `npm run build` from `web/`, and the hardware
+renderer smoke test pass in desktop Chromium. The smoke script requires Vite
+plus Chromium remote debugging on `127.0.0.1:9222`; it does not test WebXR.
+Quest hardware verifies session entry, head tracking, stereo world rendering,
+and the fixed head-relative weapon viewmodel. The new frame display must now
+be recorded during representative Quest gameplay; controller input, locomotion,
+and controller-tracked weapons are M7-M9 work.
 
 `-sGL_TESTING=1` remains temporarily even though the mirror renderer no longer
 uses it. The preinitialized context now requests `preserveDrawingBuffer`
@@ -901,9 +904,7 @@ The notes below record the failures found while bringing up the WebGL2
 renderer before the direct M6 implementation. They are retained for context;
 their TODOs and statements about the current wall are no longer current.
 
-**In progress, 2026-08-08 -- much larger than originally scoped, real
-findings so far (all reproduced/verified in desktop Chrome, no headset
-needed for this part):**
+**Historical pre-implementation investigation, 2026-08-08:**
 
 Discovered the actual blocker before writing a single line of stereo code:
 `vid_renderer` (`posix/sdl/hardware.cpp`) defaults to **0 = software
@@ -1307,44 +1308,22 @@ a bottleneck.
 
 ---
 
-## Summary answers to the brief's closing questions
+## Current project summary
 
-1. **Recommended engine**: `DrBeef/gzdoom@questzdoom` (LZDoom 3.88b) built
-   from its desktop CMake config under Emscripten, `HAVE_VM_JIT=OFF`. Reject
-   switching to PrBoom+/dsda-doom/Chocolate Doom — they'd compile far more
-   easily but have none of the VR camera/weapon/stereo machinery this
-   project needs, making the engine swap a false economy (architecture doc
-   §16).
-2. **Can QuestZDoom's exact engine realistically compile under Emscripten?**
-   Yes, with moderate, well-scoped effort. No blocker found is unfixable —
-   the two real blockers (GL4 SSBO/persistent-buffer-mapping renderer path,
-   and the asmjit JIT) both have known, bounded fixes (renderer rewrite to
-   UBO/orphaning; and a config flag to the existing bytecode interpreter,
-   respectively). The bigger unknown is effort/calendar time for the
-   renderer rework, not feasibility.
-3. **Three highest-risk technical problems**:
-   - GL4→WebGL2 renderer gap (SSBOs, persistent-mapped buffers) — the
-     largest unknown-effort item, could cascade into needing the software
-     renderer as a fallback.
-   - Quest 2/3 mobile GPU performance for real stereo rendering at ≥72 FPS
-     (M6/M10) — the project's core hardware constraint, unresolved until
-     measured on real hardware.
-   - Getting the visual weapon transform and the actual firing vector to
-     agree frame-to-frame (M9) — a correctness bug here silently breaks
-     gameplay feel without throwing any errors, easy to ship broken.
-4. **Smallest experiment to validate/invalidate the project**: Configure
-   and attempt an Emscripten build of the engine with the GL4 renderer
-   entirely stubbed out and `HAVE_VM_JIT=OFF`, targeting only a successful
-   *link* (not correct rendering) of `doomvr.wasm`. If that fails for
-   reasons beyond the ones already identified in this document, the
-   project's core technical premise needs re-evaluation before any further
-   investment. If it succeeds, M1 is essentially validated and the rest of
-   the plan is de-risked.
-5. **Exact next coding task**: Set up the Emscripten toolchain and attempt
-   `emcmake cmake` configure + build against
-   `research/QuestZDoom/Projects/Android/jni/gzdoom-g3.3mgw_mobile`'s
-   *desktop* `CMakeLists.txt`, with `HAVE_VM_JIT=OFF` and the GL4-specific
-   dynamic-lights code path disabled via an `#ifdef`, working through
-   compile errors one at a time per the brief's incremental rules (M1,
-   sub-steps 1–2) — this is the smallest possible next commit and directly
-   tests risk item #1 above.
+1. **Engine and build**: `DrBeef/gzdoom@questzdoom` (LZDoom 3.88b) builds
+   under Emscripten with `HAVE_VM_JIT=OFF`; browser gameplay, keyboard input,
+   and one-shot OpenAL/WebAudio sound effects work.
+2. **WebXR**: the browser shares the engine's WebGL2 context with
+   `XRWebGLLayer`, renders both eyes directly, forwards live per-eye matrices,
+   preserves body/head yaw separation, and drives frames from the XR callback.
+   Headset testing confirms the session lifecycle and stereoscopic world and
+   weapon rendering.
+3. **Known limitations**: streamed music is unavailable without WASM threads;
+   in-engine renderer restart is unsupported; the fixed weapon viewmodel is
+   not yet controller-tracked; controller input and locomotion do not exist.
+4. **Current risks**: Quest frame time and sustained performance remain
+   unmeasured, and controller pose/input mapping must keep visual weapon aim
+   and firing direction consistent.
+5. **Next coding task**: record the frame display during representative
+   headset gameplay, then implement M7 controller input before M8 locomotion
+   and M9 controller-tracked weapons.

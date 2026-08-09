@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Configures and builds the engine/ submodule (DrBeef/gzdoom@questzdoom, LZDoom 3.88b)
-# under Emscripten. This is the M1 milestone from docs/implementation-plan.md:
-# get *anything* to link as doomvr.wasm/doomvr.js, no VR/gameplay guarantees yet.
+# under Emscripten. The output includes the M5/M6 WebXR bridge, shared WebGL2
+# context support, and the direct per-eye renderer used by the browser UI.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -54,8 +54,7 @@ mkdir -p "${BUILD_DIR}"
 #   this may now be redundant. Keep it until direct XR rendering is validated
 #   on hardware; then remove it if the shared context still behaves correctly.
 # -sMAX_WEBGL_VERSION=2/-sMIN_WEBGL_VERSION=2: the hardware GL renderer
-#   (src/gl/, needed for M6's real per-eye stereo -- the software renderer
-#   M1-M5 ran on never touches Stereo3DMode at all) requires GL3-era
+#   (src/gl/, used by the browser UI for M6's real per-eye stereo) requires GL3-era
 #   features (UBOs, VAOs) that WebGL1/GLES2 doesn't have. Without
 #   MAX_WEBGL_VERSION=2, Emscripten never creates a WebGL2 context no
 #   matter what version SDL_GL_SetAttribute requests; MIN=2 skips a silent
@@ -66,7 +65,7 @@ mkdir -p "${BUILD_DIR}"
 #   to core WebGL2 functions. Keep it explicit rather than relying on the
 #   SDK default, which has changed between Emscripten releases.
 # -sGL_PREINITIALIZED_CONTEXT=1: accept the WebGL2 context created by
-#   engine.ts. M6 will share that exact context with XRWebGLLayer instead of
+#   engine.ts. M6 shares that exact context with XRWebGLLayer instead of
 #   rendering through a second canvas.
 emcmake cmake \
 	-S "${ENGINE_DIR}" \

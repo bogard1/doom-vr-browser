@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Starts no processes itself. With Vite and Chromium remote debugging already
-// running, exercise the opt-in WebGL renderer and fail on a browser exception.
-// Usage: node scripts/smoke-gl.mjs http://127.0.0.1:5173 /absolute/DOOM2.WAD
+// running, exercise the browser UI's hardware WebGL renderer and fail on a
+// browser exception.
+// Usage: node scripts/smoke-gl.mjs http://localhost:5173 /absolute/DOOM2.WAD
 const [baseUrl, wadPath] = process.argv.slice(2);
 
 if (!baseUrl || !wadPath) {

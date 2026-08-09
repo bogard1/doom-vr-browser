@@ -5,8 +5,8 @@
 Run your own legally-owned Doom WAD directly in a browser, compiled to
 WebAssembly from a VR-focused GZDoom/LZDoom fork
 ([QuestZDoom](https://github.com/Team-Beef-Studios/QuestZDoom)). WebXR/VR
-support includes a direct stereo-rendering pipeline; its headset validation is
-still in progress — see [Status](#status) below.
+support includes head tracking and direct per-eye rendering on a shared WebGL2
+context — see [Status](#status) below.
 
 The WAD you supply never leaves your browser: it's read into memory
 client-side and mounted directly into the WASM module's virtual filesystem.
@@ -17,9 +17,10 @@ Nothing is uploaded anywhere.
 - ✅ Engine compiles and runs under Emscripten
 - ✅ WAD upload → in-browser gameplay (video, keyboard input, audio)
 - ✅ Verified end-to-end in Chrome with a real `DOOM2.WAD`
-- 🚧 WebXR session lifecycle, head tracking, and the direct per-eye stereo
-  pipeline are implemented. Quest validation, controller input, and locomotion
-  remain in progress (see `docs/implementation-plan.md`, M6+)
+- ✅ WebXR session lifecycle, head tracking, direct per-eye stereo rendering,
+  and a fixed head-relative weapon viewmodel work on headset hardware
+- 🚧 Quest frame-time measurement, controller input, locomotion, and
+  controller-tracked weapons remain (see `docs/implementation-plan.md`, M6+)
 - ⚠️ Known limitation: in-game renderer-restart (a rarely-used CCMD) doesn't
   work in the browser build; regular gameplay is unaffected
 
@@ -55,11 +56,20 @@ make dev     # build the engine (first run only, ~5-10 min) and start the dev se
 ```
 
 Then open the printed `http://localhost:5173/` URL, drop in your WAD file,
-and click **Start Doom**.
+and click **Start Doom**. The browser UI starts Doom on the hardware WebGL2
+renderer so **Enter VR** may be pressed before or after loading the WAD. The
+engine cannot safely switch renderers while running; do not use the in-game
+renderer-restart command.
 
-Rebuilding after an `engine/` source change: just re-run `make dev` (it
-detects the missing build and reruns `make wasm` automatically), or run
-`make wasm` directly.
+For headset testing over a LAN, serve the app over HTTPS: browsers treat
+`localhost` as secure, but a Quest Browser visiting `http://<lan-ip>:5173`
+does not. The app falls back from `local-floor` to `local` tracking space when
+the runtime lacks floor-relative tracking.
+
+After changing `engine/` sources or `scripts/build-wasm.sh`, run `make wasm`
+before `make dev`; `scripts/dev.sh` rebuilds only when no existing WASM output
+is present. After modifying the engine, run `make diff-patches` before
+committing to regenerate `patches/engine/0001-emscripten-wasm-port.patch`.
 
 ## Project layout
 
@@ -92,6 +102,16 @@ Run `make help` for the full list. Highlights:
   regenerate `patches/engine/*.patch` from the diff
 - `make clean` / `make distclean` — remove build output (and, for
   `distclean`, the Emscripten SDK and `node_modules` too)
+
+## Testing
+
+- `make wasm` — compile the Emscripten engine.
+- `cd web && npm run build` — type-check and build the frontend.
+- `node scripts/smoke-gl.mjs http://localhost:5173 /absolute/path/DOOM2.WAD`
+  — exercise the hardware renderer and fail on a browser exception. It expects
+  a Vite server plus Chromium launched with remote debugging on `127.0.0.1:9222`.
+- Headset validation remains manual: verify both eye views, tracking, session
+  exit/re-entry, weapon placement, and performance in Quest Browser.
 
 ## Why a submodule + patch files, not a fork?
 

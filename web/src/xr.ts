@@ -27,6 +27,12 @@ export type XRViewsFn = (
   }>,
 ) => void;
 export type XRFrameFn = () => void;
+export interface XRFrameMetrics {
+  frameMs: number;
+  fps: number;
+  engineMs: number;
+}
+export type XRMetricsFn = (metrics: XRFrameMetrics | null) => void;
 
 let session: XRSession | null = null;
 let refSpace: XRReferenceSpace | null = null;
@@ -57,6 +63,7 @@ export async function enterVR(
   onPose: XRPoseFn,
   onViews: XRViewsFn,
   onEngineFrame: XRFrameFn,
+  onMetrics: XRMetricsFn,
   gl: WebGL2RenderingContext,
 ): Promise<void> {
   if (!navigator.xr) {
@@ -74,6 +81,7 @@ export async function enterVR(
   session.addEventListener("end", () => {
     session = null;
     refSpace = null;
+    onMetrics(null);
     onSessionEnd();
   });
 
@@ -92,7 +100,7 @@ export async function enterVR(
   onFramebufferReady(layer.framebuffer);
   onSessionReady();
   frameCount = 0;
-  session.requestAnimationFrame(onXRFrame(log, onPose, onViews, onEngineFrame, layer));
+  session.requestAnimationFrame(onXRFrame(log, onPose, onViews, onEngineFrame, onMetrics, layer));
 }
 
 export function exitVR(): void {
@@ -104,9 +112,15 @@ function onXRFrame(
   onPose: XRPoseFn,
   onViews: XRViewsFn,
   onEngineFrame: XRFrameFn,
+  onMetrics: XRMetricsFn,
   layer: XRWebGLLayer,
 ): XRFrameRequestCallback {
-  const frame: XRFrameRequestCallback = (_time, xrFrame) => {
+  let lastFrameTime = 0;
+  let sampledFrames = 0;
+  let sampledFrameMs = 0;
+  let sampledEngineMs = 0;
+
+  const frame: XRFrameRequestCallback = (time, xrFrame) => {
     if (!session || !refSpace) return;
     session.requestAnimationFrame(frame);
     frameCount++;
@@ -151,7 +165,25 @@ function onXRFrame(
 
     // The engine's independent browser rAF is paused during XR. Rendering
     // here keeps its framebuffer use inside this XR frame's valid window.
+    const engineStart = performance.now();
     onEngineFrame();
+    const engineMs = performance.now() - engineStart;
+
+    if (lastFrameTime !== 0) {
+      sampledFrames++;
+      sampledFrameMs += time - lastFrameTime;
+      sampledEngineMs += engineMs;
+      // Refresh the UI roughly once per second without adding work to every
+      // headset frame. This measures JS/WASM CPU time, not GPU compositor time.
+      if (sampledFrameMs >= 1000) {
+        const frameMs = sampledFrameMs / sampledFrames;
+        onMetrics({ frameMs, fps: 1000 / frameMs, engineMs: sampledEngineMs / sampledFrames });
+        sampledFrames = 0;
+        sampledFrameMs = 0;
+        sampledEngineMs = 0;
+      }
+    }
+    lastFrameTime = time;
 
     if (!shouldLog) return;
 
