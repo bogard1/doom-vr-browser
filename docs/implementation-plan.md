@@ -875,9 +875,9 @@ hardware validation:
   animation-frame callback runs exactly one engine tick/render via
   `VR_WebXR_RunFrame`, while the XR framebuffer is valid, then schedules the
   next XR frame. The normal loop resumes when the session ends.
-- Doom must start after entering VR, so it starts with the hardware renderer.
-  If Doom is already running, entering VR ends the session and asks for a
-  restart rather than trying to switch renderers in-process.
+- Doom starts with the hardware renderer from the browser UI, so VR can be
+  entered either before or after loading a WAD without trying to switch
+  renderers in-process.
 
 `bash scripts/build-wasm.sh`, `npm run build` from `web/`, and
 `node scripts/smoke-gl.mjs http://localhost:5173 <path-to-DOOM2.WAD>` pass in

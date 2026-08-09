@@ -40,7 +40,6 @@ let currentWad: LoadedWad | null = null;
 // activates exactly when both sides are ready, in either order.
 let currentModule: DoomModule | null = null;
 let xrActive = false;
-let doomStarted = false;
 
 async function handleFile(file: File): Promise<void> {
   try {
@@ -85,8 +84,7 @@ startButton.addEventListener("click", async () => {
     status.log("Mounting WAD…");
     const iwadPath = mountWad(engine, currentWad);
     status.log(`Starting engine with -iwad ${iwadPath}`);
-    doomStarted = true;
-    startDoom(engine, iwadPath, xrActive);
+    startDoom(engine, iwadPath, true);
   } catch (err) {
     status.error(err instanceof Error ? err.message : String(err));
     startButton.disabled = false;
@@ -122,11 +120,6 @@ enterVRButton.addEventListener("click", async () => {
       },
       (framebuffer) => registerWebXRFramebuffer(engine, framebuffer),
       () => {
-        if (doomStarted) {
-          status.error("Restart Doom after entering VR to use the hardware stereo renderer.");
-          exitVR();
-          return;
-        }
         xrActive = true;
         setWebXRActive(engine, true);
       },

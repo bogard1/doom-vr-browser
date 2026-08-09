@@ -139,9 +139,8 @@ export function mountWad(module: DoomModule, wad: LoadedWad): string {
 
 export function startDoom(module: DoomModule, iwadPath: string, useHardwareRenderer = false): void {
   const args = ["-iwad", iwadPath];
-  // Kept opt-in while M6 brings up the WebGL2 renderer. Normal gameplay
-  // remains on the known-good software renderer until the hardware path is
-  // proven on desktop Chrome and Quest.
+  // XR sessions can be started after Doom, but its renderer cannot be switched
+  // safely in-process. Start the browser UI on this path from the outset.
   if (useHardwareRenderer || new URLSearchParams(window.location.search).get("renderer") === "gl") {
     args.push("+vid_renderer", "1");
   }
