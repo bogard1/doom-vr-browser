@@ -100,16 +100,17 @@ index 0000000000..b702488784
 +#endif //vrinput_h
 diff --git c/platform/emscripten-stub/vr_stub.cpp i/platform/emscripten-stub/vr_stub.cpp
 new file mode 100644
-index 0000000000..916d6a57cb
+index 0000000000..9eba3ca395
 --- /dev/null
 +++ i/platform/emscripten-stub/vr_stub.cpp
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,71 @@
 +// Definitions for QuestZDoom globals that WebXR does not use directly. The
 +// browser bridge supplies thumbstick locomotion through VR_GetMove();
 +// controller poses and room-scale movement remain later milestones.
 +#include <cstdint>
 +#include "QzDoom/VrCommon.h"
 +#include "../web/vr_webxr.h"
++#include "g_game.h"
 +
 +bool qzdoom_initialised = false;
 +
@@ -166,6 +167,7 @@ index 0000000000..916d6a57cb
 +	float *up, float *yaw, float *pitch, float *roll)
 +{
 +	WebXR_GetLocomotion(joy_forward, joy_side);
++	G_AddViewPitch(WebXR_GetLookPitch());
 +	*hmd_forward = 0;
 +	*hmd_side = 0;
 +	*up = 0;
@@ -175,10 +177,10 @@ index 0000000000..916d6a57cb
 +}
 diff --git c/platform/web/vr_webxr.cpp i/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..163ad8f63e
+index 0000000000..bf2dadd942
 --- /dev/null
 +++ i/platform/web/vr_webxr.cpp
-@@ -0,0 +1,467 @@
+@@ -0,0 +1,491 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -240,6 +242,8 @@ index 0000000000..163ad8f63e
 +bool g_active = false;
 +bool g_haveYawZero = false;
 +double g_yawZeroDeg = 0.0;
++bool g_haveHeightZero = false;
++double g_heightZeroMeters = 0.0;
 +
 +double g_yawDeg = 0.0;
 +double g_pitchDeg = 0.0;
@@ -247,6 +251,7 @@ index 0000000000..163ad8f63e
 +double g_heightMeters = 0.0;
 +float g_locomotionForward = 0.0f;
 +float g_locomotionSide = 0.0f;
++float g_lookPitch = 0.0f;
 +int g_snapTurnLatch = 0;
 +
 +struct WebXREyeState
@@ -313,7 +318,8 @@ index 0000000000..163ad8f63e
 +	if (!g_active)
 +	{
 +		g_yawDeg = g_pitchDeg = g_rollDeg = g_heightMeters = 0.0;
-+		g_locomotionForward = g_locomotionSide = 0.0f;
++		g_haveHeightZero = false;
++		g_locomotionForward = g_locomotionSide = g_lookPitch = 0.0f;
 +		g_snapTurnLatch = 0;
 +		g_xrFramebuffer = 0;
 +		WebXR_ReleaseLayerFramebuffer();
@@ -389,11 +395,15 @@ index 0000000000..163ad8f63e
 +	g_yawDeg = yawDeg;
 +	g_pitchDeg = pitchDeg;
 +	g_rollDeg = rollDeg;
-+	// Only vertical (stand/crouch) head displacement is applied for M5;
-+	// horizontal room-scale translation needs collision-aware handling
-+	// (physically walking into a wall vs. the map's walls) that's follow-up
-+	// work, not required by M5's acceptance criteria.
-+	g_heightMeters = py;
++	// Doom already puts the view at the player's standing eye height. Use the
++	// first local-floor sample as zero so a typical 1.6 m WebXR floor height is
++	// not added a second time; subsequent stand/crouch motion remains visible.
++	if (!g_haveHeightZero)
++	{
++		g_heightZeroMeters = py;
++		g_haveHeightZero = true;
++	}
++	g_heightMeters = py - g_heightZeroMeters;
 +}
 +
 +void VR_WebXR_RegisterFramebuffer(int framebuffer)
@@ -496,7 +506,17 @@ index 0000000000..163ad8f63e
 +	}
 +
 +	const float snapX = useRightStick ? leftX : rightX;
++	const float lookY = useRightStick ? leftY : rightY;
 +	const bool hasSnapStick = validMask & (useRightStick ? 1 : 2);
++	if (!hasSnapStick || !std::isfinite(lookY) || std::abs(lookY) <= 0.20f)
++	{
++		g_lookPitch = 0.0f;
++	}
++	else
++	{
++		const float magnitude = (std::abs(lookY) - 0.20f) / 0.80f;
++		g_lookPitch = -std::copysign(std::min(1.0f, magnitude), lookY);
++	}
 +	if (!hasSnapStick || !std::isfinite(snapX) || std::abs(snapX) < 0.45f)
 +	{
 +		g_snapTurnLatch = 0;
@@ -519,6 +539,12 @@ index 0000000000..163ad8f63e
 +{
 +	*forward = g_locomotionForward;
 +	*side = g_locomotionSide;
++}
++
++int WebXR_GetLookPitch()
++{
++	// 90 degrees/sec at full deflection, consumed at Doom's fixed 35 Hz tic.
++	return AngleFromDegrees(g_lookPitch * 90.0f / TICRATE);
 +}
 +
 +CCMD(vr_recenter)
@@ -648,10 +674,10 @@ index 0000000000..163ad8f63e
 +} // namespace s3d
 diff --git c/platform/web/vr_webxr.h i/platform/web/vr_webxr.h
 new file mode 100644
-index 0000000000..28c557cb53
+index 0000000000..3985d4bba4
 --- /dev/null
 +++ i/platform/web/vr_webxr.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,80 @@
 +// WebXR head-tracking and stereo bridge. The browser passes only primitive
 +// values through this C ABI; this code never needs WebXR JS types or the JS
 +// heap.
@@ -666,6 +692,7 @@ index 0000000000..28c557cb53
 +bool WebXR_IsStereoReady();
 +void WebXR_SetFrameOwnership(bool active);
 +void WebXR_GetLocomotion(float *forward, float *side);
++int WebXR_GetLookPitch();
 +
 +extern "C" {
 +

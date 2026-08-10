@@ -777,9 +777,12 @@ putting on the headset lines up with the body's existing keyboard/mouse
 facing direction. Pitch/roll are used as-is, not recentered, since "which way
 is down" is gravity-defined, not arbitrary. A basic vertical (stand/crouch)
 head-height offset is also applied to `r_viewpoint.Pos.Z`, gated by a new
-`vr_webxr_use_position` CVar; horizontal room-scale translation is
-deliberately deferred (needs collision-aware handling the map's actual walls
-don't know about) -- not required by this milestone's acceptance criteria.
+`vr_webxr_use_position` CVar. The first `local-floor`/`local` height sample is
+the zero baseline because Doom already places the view at standing eye height;
+only subsequent crouch/stand displacement is applied. Horizontal room-scale
+translation is deliberately deferred (needs collision-aware handling the map's
+actual walls don't know about) -- not required by this milestone's acceptance
+criteria.
 
 Verified: engine builds clean under Emscripten with the new files/CMake
 wiring and the new exported symbols show up in the built `lzdoom.js`; full
@@ -1284,10 +1287,12 @@ sticks.
 The other stick triggers one body-yaw increment when it crosses +/-0.60 and
 must return inside +/-0.45 before another turn. The `vr_snapTurn` archive CVar
 now defaults to 30 degrees. It is applied through `G_AddViewAngle`, leaving M5
-head tracking untouched. WebXR M8 deliberately does not implement room-scale
-translation, teleport aiming, controller-tracked weapons, or haptics beyond
-M7's fire pulse; those remain later milestones. The existing digital stick-key
-events remain available for menus and user bindings alongside analog movement.
+head tracking untouched. Its vertical axis controls body pitch smoothly at up
+to 90 degrees/second after a 0.20 deadzone, applied per fixed Doom tic. WebXR
+M8 deliberately does not implement room-scale translation, teleport aiming,
+controller-tracked weapons, or haptics beyond M7's fire pulse; those remain
+later milestones. The existing digital stick-key events remain available for
+menus and user bindings alongside analog movement.
 
 ---
 
