@@ -140,10 +140,15 @@ export function mountWad(module: DoomModule, wad: LoadedWad): string {
 
 export function startDoom(module: DoomModule, iwadPath: string, useHardwareRenderer = false): void {
   const args = ["-iwad", iwadPath];
+  const query = new URLSearchParams(window.location.search);
   // XR sessions can be started after Doom, but its renderer cannot be switched
   // safely in-process. Start the browser UI on this path from the outset.
-  if (useHardwareRenderer || new URLSearchParams(window.location.search).get("renderer") === "gl") {
+  if (useHardwareRenderer || query.get("renderer") === "gl") {
     args.push("+vid_renderer", "1");
+  }
+  // M9 is opt-in until its Quest grip-space calibration is hardware-validated.
+  if (query.get("controllerWeapon") === "1") {
+    args.push("+vr_webxr_controller_weapon", "1");
   }
   module.callMain(args);
 }

@@ -177,10 +177,10 @@ index 0000000000..9eba3ca395
 +}
 diff --git c/platform/web/vr_webxr.cpp i/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..fd68ac733d
+index 0000000000..a621bbeeaa
 --- /dev/null
 +++ i/platform/web/vr_webxr.cpp
-@@ -0,0 +1,605 @@
+@@ -0,0 +1,609 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -210,6 +210,7 @@ index 0000000000..fd68ac733d
 +#include "gl/renderer/gl_renderbuffers.h"
 +
 +CVAR(Bool, vr_webxr_use_position, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
++CVAR(Bool, vr_webxr_controller_weapon, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 +EXTERN_CVAR(Float, vr_vunits_per_meter)
 +EXTERN_CVAR(Float, vr_weaponScale)
 +EXTERN_CVAR(Bool, vr_move_use_offhand)
@@ -345,6 +346,8 @@ index 0000000000..fd68ac733d
 +	g_haveYawZero = false;
 +	if (!g_active)
 +	{
++		player_t *player = r_viewpoint.camera ? r_viewpoint.camera->player : nullptr;
++		if (player) player->mo->OverrideAttackPosDir = false;
 +		g_yawDeg = g_pitchDeg = g_rollDeg = g_heightMeters = 0.0;
 +		g_headPosition[0] = g_headPosition[1] = g_headPosition[2] = 0.0;
 +		g_rightController = WebXRControllerState();
@@ -688,8 +691,9 @@ index 0000000000..fd68ac733d
 +
 +	player_t *player = r_viewpoint.camera ? r_viewpoint.camera->player : nullptr;
 +	if (!player) return;
-+	player->mo->OverrideAttackPosDir = g_rightController.valid;
-+	if (!g_rightController.valid) return;
++	const bool useControllerWeapon = vr_webxr_controller_weapon && g_rightController.valid;
++	player->mo->OverrideAttackPosDir = useControllerWeapon;
++	if (!useControllerWeapon) return;
 +
 +	const float bodyYaw = static_cast<float>(r_viewpoint.Angles.Yaw.Degrees - g_yawDeg);
 +	g_rightController.yawDeg = bodyYaw + g_rightController.yawRelativeDeg;
@@ -747,7 +751,7 @@ index 0000000000..fd68ac733d
 +bool WebXRDeviceMode::GetWeaponTransform(VSMatrix *out, int hand) const
 +{
 +	player_t *player = r_viewpoint.camera ? r_viewpoint.camera->player : nullptr;
-+	if (hand != 0 || !g_rightController.valid || !player) return false;
++	if (hand != 0 || !vr_webxr_controller_weapon || !g_rightController.valid || !player) return false;
 +
 +	const float controllerX = static_cast<float>(g_rightController.position[0] - g_headPosition[0]);
 +	const float controllerY = static_cast<float>(g_rightController.position[1] - g_headPosition[1]);

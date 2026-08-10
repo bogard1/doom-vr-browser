@@ -1324,7 +1324,7 @@ vector → two-handed stabilization).
   aiming off-body-forward and confirming hits land where aimed.
 - Each of the 5 sub-stages independently testable and committed separately.
 
-**Status: implemented in source, pending headset validation.**
+**Status: experimental, disabled by default pending headset calibration.**
 Each XR frame, `web/src/input.ts` obtains the right `xr-standard` controller's
 `gripSpace` pose and sends it through `VR_WebXR_SetRightControllerPose`. The
 engine stores that transform in the same reference space as the head pose,
@@ -1334,10 +1334,12 @@ the world-space weapon matrix. When the right grip is tracked,
 mapped position and orientation to `AttackPos` and `AttackDir`; hitscan and
 projectiles therefore originate and travel where the visible weapon points.
 
-This is the single-right-hand stage only. A missing or untracked right grip
-falls back to the M6 head-relative weapon and normal engine aiming. Off-hand
-weapon poses, two-handed stabilization, calibration offsets, and hardware aim
-validation remain follow-up work.
+This is the single-right-hand stage only. It is gated by
+`vr_webxr_controller_weapon`, which defaults off so the known-good M6 weapon
+and firing path remain available. Start the browser with `?controllerWeapon=1`
+to enable it for calibration testing. A missing or untracked right grip also
+falls back to M6. Off-hand weapon poses, two-handed stabilization, calibration
+offsets, and hardware aim validation remain follow-up work.
 
 ---
 
