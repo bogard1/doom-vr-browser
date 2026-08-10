@@ -41,10 +41,11 @@ The page now displays rolling XR frame cadence and JS/WASM engine CPU time.
 M7 translates `xr-standard` controller transitions to the engine's normal
 virtual gamepad keys and has been validated on Quest. M8 supplies analog-stick
 locomotion and snap-turn through the same Emscripten bridge; headset validation
-is still needed for that new movement path. Controller-tracked weapons remain
-future work. The analysis and strategy sections below retain the original risks
-and decisions; where they describe a future porting task, the later status notes
-supersede them.
+is still needed for that new movement path. M9 now bridges the right controller
+grip pose into the weapon's world transform and attack origin/direction, pending
+hardware aim validation. The analysis and strategy sections below retain the
+original risks and decisions; where they describe a future porting task, the
+later status notes supersede them.
 
 ## 2. Relevant repositories / submodules
 

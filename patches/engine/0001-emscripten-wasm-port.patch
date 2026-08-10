@@ -177,10 +177,10 @@ index 0000000000..9eba3ca395
 +}
 diff --git c/platform/web/vr_webxr.cpp i/platform/web/vr_webxr.cpp
 new file mode 100644
-index 0000000000..bf2dadd942
+index 0000000000..f10b307792
 --- /dev/null
 +++ i/platform/web/vr_webxr.cpp
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,604 @@
 +// WebXR head-tracking bridge (M5). web/src/xr.ts calls VR_WebXR_SetActive on
 +// XR session start/end and VR_WebXR_SetHeadPose once per XR frame; this file
 +// converts the raw pose into engine camera angles.
@@ -202,6 +202,7 @@ index 0000000000..bf2dadd942
 +#include "c_cvars.h"
 +#include "c_dispatch.h"
 +#include "d_event.h"
++#include "d_player.h"
 +#include "doomdef.h"
 +#include "g_game.h"
 +#include "gl/renderer/gl_renderer.h"
@@ -249,10 +250,23 @@ index 0000000000..bf2dadd942
 +double g_pitchDeg = 0.0;
 +double g_rollDeg = 0.0;
 +double g_heightMeters = 0.0;
++double g_headPosition[3] = { 0.0, 0.0, 0.0 };
 +float g_locomotionForward = 0.0f;
 +float g_locomotionSide = 0.0f;
 +float g_lookPitch = 0.0f;
 +int g_snapTurnLatch = 0;
++
++struct WebXRControllerState
++{
++	bool valid = false;
++	float position[3] = { 0.0f, 0.0f, 0.0f };
++	float yawRelativeDeg = 0.0f;
++	float yawDeg = 0.0f;
++	float pitchDeg = 0.0f;
++	float rollDeg = 0.0f;
++};
++
++WebXRControllerState g_rightController;
 +
 +struct WebXREyeState
 +{
@@ -297,6 +311,19 @@ index 0000000000..bf2dadd942
 +	return static_cast<int>(std::round(65535.0f * degrees / 360.0f));
 +}
 +
++DVector3 ControllerDirection()
++{
++	const DAngle yaw(g_rightController.yawDeg);
++	const DAngle pitch(g_rightController.pitchDeg);
++	const double cosPitch = pitch.Cos();
++	return { cosPitch * yaw.Cos(), cosPitch * yaw.Sin(), -pitch.Sin() };
++}
++
++DVector3 WebXRMapAttackDir(AActor *, DAngle, DAngle)
++{
++	return ControllerDirection();
++}
++
 +} // namespace
 +
 +bool WebXR_IsActive()
@@ -318,6 +345,8 @@ index 0000000000..bf2dadd942
 +	if (!g_active)
 +	{
 +		g_yawDeg = g_pitchDeg = g_rollDeg = g_heightMeters = 0.0;
++		g_headPosition[0] = g_headPosition[1] = g_headPosition[2] = 0.0;
++		g_rightController = WebXRControllerState();
 +		g_haveHeightZero = false;
 +		g_locomotionForward = g_locomotionSide = g_lookPitch = 0.0f;
 +		g_snapTurnLatch = 0;
@@ -395,6 +424,9 @@ index 0000000000..bf2dadd942
 +	g_yawDeg = yawDeg;
 +	g_pitchDeg = pitchDeg;
 +	g_rollDeg = rollDeg;
++	g_headPosition[0] = px;
++	g_headPosition[1] = py;
++	g_headPosition[2] = pz;
 +	// Doom already puts the view at the player's standing eye height. Use the
 +	// first local-floor sample as zero so a typical 1.6 m WebXR floor height is
 +	// not added a second time; subsequent stand/crouch motion remains visible.
@@ -528,6 +560,37 @@ index 0000000000..bf2dadd942
 +	}
 +}
 +
++void VR_WebXR_SetRightControllerPose(int valid,
++	float qx, float qy, float qz, float qw,
++	float px, float py, float pz)
++{
++	g_rightController.valid = false;
++	if (!g_active || valid == 0 || !g_haveYawZero ||
++		!std::isfinite(qx) || !std::isfinite(qy) || !std::isfinite(qz) || !std::isfinite(qw) ||
++		!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) return;
++
++	const double x = qx, y = qy, z = qz, w = qw;
++	const double m20 = 2.0 * (x * z - w * y);
++	const double m22 = 1.0 - 2.0 * (x * x + y * y);
++	const double yawRaw = std::atan2(m20, m22);
++	const double sinPitch = std::max(-1.0, std::min(1.0, 2.0 * (y * z + w * x)));
++	const double pitchRaw = std::asin(-sinPitch);
++	const double m01 = 2.0 * (x * y - w * z);
++	const double m11 = 1.0 - 2.0 * (x * x + z * z);
++	const double rollRaw = std::atan2(m01, m11);
++	const double radiansToDegrees = 180.0 / M_PI;
++
++	// Align this reference-space orientation with the same body-forward zero
++	// used by the headset. It keeps weapon aim independent of head yaw.
++	g_rightController.yawRelativeDeg = -static_cast<float>(yawRaw * radiansToDegrees) - static_cast<float>(g_yawZeroDeg);
++	g_rightController.pitchDeg = static_cast<float>(pitchRaw * radiansToDegrees);
++	g_rightController.rollDeg = -static_cast<float>(rollRaw * radiansToDegrees);
++	g_rightController.position[0] = px;
++	g_rightController.position[1] = py;
++	g_rightController.position[2] = pz;
++	g_rightController.valid = true;
++}
++
 +void VR_WebXR_Recenter()
 +{
 +	g_haveYawZero = false;
@@ -621,11 +684,39 @@ index 0000000000..bf2dadd942
 +	{
 +		r_viewpoint.Pos.Z += g_heightMeters * vr_vunits_per_meter;
 +	}
++
++	player_t *player = r_viewpoint.camera ? r_viewpoint.camera->player : nullptr;
++	if (!player) return;
++	player->mo->OverrideAttackPosDir = g_rightController.valid;
++	if (!g_rightController.valid) return;
++
++	const float bodyYaw = static_cast<float>(r_viewpoint.Angles.Yaw.Degrees - g_yawDeg);
++	g_rightController.yawDeg = bodyYaw + g_rightController.yawRelativeDeg;
++	const float yawRadians = DEG2RAD(bodyYaw);
++	const float controllerX = static_cast<float>(g_rightController.position[0] - g_headPosition[0]);
++	const float controllerY = static_cast<float>(g_rightController.position[1] - g_headPosition[1]);
++	const float controllerZ = static_cast<float>(g_rightController.position[2] - g_headPosition[2]);
++	const float scale = vr_vunits_per_meter;
++
++	player->mo->AttackAngle = g_rightController.yawDeg;
++	player->mo->AttackPitch = g_rightController.pitchDeg;
++	player->mo->AttackRoll = g_rightController.rollDeg;
++	player->mo->AttackPos.X = r_viewpoint.CenterEyePos.X + (-std::cos(yawRadians) * controllerX - std::sin(yawRadians) * controllerZ) * scale;
++	player->mo->AttackPos.Y = r_viewpoint.CenterEyePos.Y + (std::sin(yawRadians) * controllerX - std::cos(yawRadians) * controllerZ) * scale;
++	player->mo->AttackPos.Z = r_viewpoint.CenterEyePos.Z + controllerY * scale;
++	player->mo->AttackDir = WebXRMapAttackDir;
 +}
 +
 +void WebXRDeviceMode::AdjustPlayerSprites(int hand) const
 +{
-+	(void)hand;
++	if (GetWeaponTransform(&gl_RenderState.mModelMatrix, hand))
++	{
++		const float scale = 0.000625f * vr_weaponScale * vr_vunits_per_meter;
++		gl_RenderState.mModelMatrix.scale(scale, -scale, scale);
++		gl_RenderState.mModelMatrix.translate(-viewwidth / 2, -viewheight * 3 / 4, 0.0f);
++		gl_RenderState.EnableModelMatrix(true);
++		return;
++	}
 +
 +	// Player sprites normally use pixel coordinates after Begin2D(), making
 +	// the weapon a different screen-space image in each eye. Place that quad
@@ -651,6 +742,28 @@ index 0000000000..bf2dadd942
 +	gl_RenderState.EnableModelMatrix(true);
 +}
 +
++bool WebXRDeviceMode::GetWeaponTransform(VSMatrix *out, int hand) const
++{
++	if (hand != 0 || !g_rightController.valid) return false;
++
++	const float bodyYaw = static_cast<float>(r_viewpoint.Angles.Yaw.Degrees - g_yawDeg);
++	const float yawRadians = DEG2RAD(bodyYaw);
++	const float controllerX = static_cast<float>(g_rightController.position[0] - g_headPosition[0]);
++	const float controllerY = static_cast<float>(g_rightController.position[1] - g_headPosition[1]);
++	const float controllerZ = static_cast<float>(g_rightController.position[2] - g_headPosition[2]);
++	const float scale = vr_vunits_per_meter;
++	const float worldX = r_viewpoint.CenterEyePos.X + (-std::cos(yawRadians) * controllerX - std::sin(yawRadians) * controllerZ) * scale;
++	const float worldY = r_viewpoint.CenterEyePos.Y + (std::sin(yawRadians) * controllerX - std::cos(yawRadians) * controllerZ) * scale;
++	const float worldZ = r_viewpoint.CenterEyePos.Z + controllerY * scale;
++
++	out->loadIdentity();
++	out->translate(worldX, worldZ, worldY);
++	out->rotate(-90.0f + g_rightController.yawDeg, 0.0f, 1.0f, 0.0f);
++	out->rotate(-g_rightController.pitchDeg, 1.0f, 0.0f, 0.0f);
++	out->rotate(-g_rightController.rollDeg, 0.0f, 0.0f, 1.0f);
++	return true;
++}
++
 +void WebXRDeviceMode::UnAdjustPlayerSprites() const
 +{
 +	gl_RenderState.EnableModelMatrix(false);
@@ -674,10 +787,10 @@ index 0000000000..bf2dadd942
 +} // namespace s3d
 diff --git c/platform/web/vr_webxr.h i/platform/web/vr_webxr.h
 new file mode 100644
-index 0000000000..3985d4bba4
+index 0000000000..720ce949e8
 --- /dev/null
 +++ i/platform/web/vr_webxr.h
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,84 @@
 +// WebXR head-tracking and stereo bridge. The browser passes only primitive
 +// values through this C ABI; this code never needs WebXR JS types or the JS
 +// heap.
@@ -711,6 +824,9 @@ index 0000000000..3985d4bba4
 +void VR_WebXR_SetLocomotion(int validMask,
 +	float leftX, float leftY, float rightX, float rightY,
 +	float leftYawDeg, float rightYawDeg);
++void VR_WebXR_SetRightControllerPose(int valid,
++	float qx, float qy, float qz, float qw,
++	float px, float py, float pz);
 +int VR_WebXR_RunFrame();
 +
 +} // extern "C"
@@ -743,6 +859,7 @@ index 0000000000..3985d4bba4
 +	void Present() const override;
 +	void AdjustPlayerSprites(int hand = 0) const override;
 +	void UnAdjustPlayerSprites() const override;
++	bool GetWeaponTransform(VSMatrix *out, int hand = 0) const override;
 +	bool RenderPlayerSpritesCrossed() const override { return true; }
 +	bool RenderPlayerSpritesInScene() const override { return true; }
 +

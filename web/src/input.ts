@@ -34,6 +34,12 @@ export interface XRLocomotion {
   rightYawDeg: number;
 }
 
+export interface XRControllerPose {
+  valid: boolean;
+  orientation: { x: number; y: number; z: number; w: number };
+  position: { x: number; y: number; z: number };
+}
+
 interface SourceState {
   keys: Set<number>;
   layout: "base" | "meta-touch";
@@ -184,6 +190,28 @@ export class WebXRInput {
       else state.rightYawDeg = yawDeg;
     }
     return state;
+  }
+
+  rightControllerPose(
+    inputSources: readonly XRInputSource[],
+    frame: XRFrame,
+    refSpace: XRReferenceSpace,
+  ): XRControllerPose {
+    const empty: XRControllerPose = {
+      valid: false,
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+      position: { x: 0, y: 0, z: 0 },
+    };
+    const source = inputSources.find(({ handedness, gamepad }) => handedness === "right" && gamepad?.mapping === "xr-standard");
+    if (!source) return empty;
+    const pose = frame.getPose(source.gripSpace ?? source.targetRaySpace, refSpace);
+    if (!pose) return empty;
+    const { orientation, position } = pose.transform;
+    return {
+      valid: true,
+      orientation: { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w },
+      position: { x: position.x, y: position.y, z: position.z },
+    };
   }
 
   private release(source: XRInputSource, state: SourceState, enabled: boolean, postKey: KeyPostFn): void {

@@ -1324,6 +1324,21 @@ vector → two-handed stabilization).
   aiming off-body-forward and confirming hits land where aimed.
 - Each of the 5 sub-stages independently testable and committed separately.
 
+**Status: implemented in source, pending headset validation.**
+Each XR frame, `web/src/input.ts` obtains the right `xr-standard` controller's
+`gripSpace` pose and sends it through `VR_WebXR_SetRightControllerPose`. The
+engine stores that transform in the same reference space as the head pose,
+aligns it to the recentered body yaw, and uses its head-relative position for
+the world-space weapon matrix. When the right grip is tracked,
+`WebXRDeviceMode::SetUp()` enables `OverrideAttackPosDir` and assigns that same
+mapped position and orientation to `AttackPos` and `AttackDir`; hitscan and
+projectiles therefore originate and travel where the visible weapon points.
+
+This is the single-right-hand stage only. A missing or untracked right grip
+falls back to the M6 head-relative weapon and normal engine aiming. Off-hand
+weapon poses, two-handed stabilization, calibration offsets, and hardware aim
+validation remain follow-up work.
+
 ---
 
 ## M10 — Quest optimization
@@ -1365,13 +1380,15 @@ a bottleneck.
    `XRWebGLLayer`, renders both eyes directly, forwards live per-eye matrices,
    preserves body/head yaw separation, and drives frames from the XR callback.
    Headset testing confirms the session lifecycle and stereoscopic world and
-   weapon rendering.
+   weapon rendering. M7 controller input and M8 smooth locomotion/snap-turn
+   are also implemented and hardware-validated.
 3. **Known limitations**: streamed music is unavailable without WASM threads;
-   in-engine renderer restart is unsupported; the fixed weapon viewmodel is
-   not yet controller-tracked; controller input and locomotion do not exist.
+   in-engine renderer restart is unsupported; controller-tracked weapon aiming
+   has not yet been validated on hardware; two-handed stabilization and
+   room-scale/teleport movement are unavailable.
 4. **Current risks**: Quest frame time and sustained performance remain
-   unmeasured, and controller pose/input mapping must keep visual weapon aim
-   and firing direction consistent.
+   unmeasured, and controller pose mapping must keep visual weapon aim and
+   firing direction consistent.
 5. **Next coding task**: record the frame display during representative
-   headset gameplay, then implement M7 controller input before M8 locomotion
-   and M9 controller-tracked weapons.
+   headset gameplay and validate M9 weapon aim; then profile M10 only if the
+   72 FPS target is not met.

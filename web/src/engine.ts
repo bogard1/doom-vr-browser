@@ -2,7 +2,7 @@
 // copied to public/engine/ by scripts/dev.sh). Keeps the WASM/FS-mounting
 // details out of main.ts.
 import type { LoadedWad } from "./wad-loader";
-import type { XRLocomotion } from "./input";
+import type { XRControllerPose, XRLocomotion } from "./input";
 
 interface EmscriptenFS {
   mkdirTree(path: string): void;
@@ -195,6 +195,26 @@ export function setWebXRLocomotion(module: DoomModule, locomotion: XRLocomotion)
       locomotion.rightY,
       locomotion.leftYawDeg,
       locomotion.rightYawDeg,
+    ],
+  );
+}
+
+// M9: forwards the right-hand grip pose used by both the world-space weapon
+// matrix and the engine's hitscan/projectile origin and direction.
+export function setWebXRRightControllerPose(module: DoomModule, pose: XRControllerPose): void {
+  module.ccall(
+    "VR_WebXR_SetRightControllerPose",
+    null,
+    ["number", "number", "number", "number", "number", "number", "number", "number"],
+    [
+      pose.valid ? 1 : 0,
+      pose.orientation.x,
+      pose.orientation.y,
+      pose.orientation.z,
+      pose.orientation.w,
+      pose.position.x,
+      pose.position.y,
+      pose.position.z,
     ],
   );
 }
